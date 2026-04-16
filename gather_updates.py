@@ -13,7 +13,7 @@ from edookit import (
     AuthError, TranslationError, COOKIE_REFRESH_INSTRUCTIONS, BASE_URL,
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     check_azure_openai, translate_to_english, download_attachment, send_email,
-    load_config,
+    load_config, render_email_html,
 )
 
 
@@ -309,7 +309,7 @@ def format_summary(items_by_type, details_by_url):
             detail = details_by_url.get(item["url"])
             section_lines.append(formatter(item, detail))
 
-        sections.append("\n".join(section_lines))
+        sections.append("\n\n".join(section_lines))
 
     if not sections:
         return "No new updates.\n"
@@ -440,8 +440,7 @@ def main():
 
         # Print to stdout (always)
         if args.dry_run_html:
-            import markdown as md
-            print(md.markdown(output, extensions=["extra"]))
+            print(render_email_html(output))
         else:
             print(output)
 

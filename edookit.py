@@ -400,6 +400,58 @@ def translate_to_english(text, config):
 
 SMTP_CONFIG_KEYS = ["smtp_host", "smtp_port", "email_from", "email_to"]
 
+_EMAIL_HTML_TEMPLATE = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body style="margin:0; padding:0; background-color:#f3f4f6; \
+font-family:Arial, Helvetica, sans-serif; color:#1f2937;">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" \
+border="0" style="border-collapse:collapse; background-color:#f3f4f6;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="680" cellpadding="0" cellspacing="0" \
+border="0" style="width:100%%; max-width:680px; border-collapse:collapse; \
+background-color:#ffffff;">
+<tr><td style="padding:24px;">
+%s
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
+
+def render_email_html(markdown_body):
+    """Convert markdown to email-safe HTML with proper structure.
+
+    Uses nl2br so that newlines within items become visible line breaks,
+    and wraps the result in a table-based email template.
+    """
+    import markdown as md
+    html_content = md.markdown(
+        markdown_body, extensions=["extra", "nl2br"]
+    )
+    # Style section headers and list items for readability
+    styled = html_content
+    styled = styled.replace(
+        "<h2>",
+        '<h2 style="font-size:20px; color:#111827; border-bottom:1px solid '
+        '#d1d5db; padding:10px 0 6px 0; margin:24px 0 12px 0;">',
+    )
+    styled = styled.replace(
+        "<li>",
+        '<li style="margin-bottom:16px; line-height:1.6;">',
+    )
+    styled = styled.replace(
+        "<a ",
+        '<a style="color:#6b7280; text-decoration:underline;" ',
+    )
+    return _EMAIL_HTML_TEMPLATE % styled
+
 
 def send_email(subject, markdown_body, config, attachment_paths=None):
     """Send an email with markdown body rendered to HTML, plus optional attachments.
@@ -407,8 +459,6 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
     Sends a multipart message with both plain text and HTML parts.
     Raises RuntimeError if SMTP config is missing or sending fails.
     """
-    import markdown as md
-
     missing = [k for k in SMTP_CONFIG_KEYS if not config.get(k)]
     if missing:
         env_names = [_ENV_MAP[k] for k in missing]
@@ -427,8 +477,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
     # Body: plain text + HTML alternative
     alt = MIMEMultipart("alternative")
     alt.attach(MIMEText(markdown_body, "plain", "utf-8"))
-    html_body = md.markdown(markdown_body, extensions=["extra"])
-    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    alt.attach(MIMEText(render_email_html(markdown_body), "html", "utf-8"))
     msg.attach(alt)
 
     # Attachments
