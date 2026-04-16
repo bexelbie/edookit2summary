@@ -1,0 +1,22 @@
+# ABOUTME: Systemd timer for edookit summary gatherer.
+# ABOUTME: Weekdays 15:00-21:00 every 2h, weekends 08:00 and 20:00, Europe/Prague.
+
+[Unit]
+Description=Edookit school notification check
+
+[Timer]
+# Weekdays: every 2 hours from 15:00 to 21:00 (CET/CEST)
+OnCalendar=Mon..Fri *-*-* 15:00:00 Europe/Prague
+OnCalendar=Mon..Fri *-*-* 17:00:00 Europe/Prague
+OnCalendar=Mon..Fri *-*-* 19:00:00 Europe/Prague
+OnCalendar=Mon..Fri *-*-* 21:00:00 Europe/Prague
+
+# Weekends: 08:00 and 20:00 (CET/CEST)
+OnCalendar=Sat,Sun *-*-* 08:00:00 Europe/Prague
+OnCalendar=Sat,Sun *-*-* 20:00:00 Europe/Prague
+
+Persistent=true
+Unit=edookit2summary.service
+
+[Install]
+WantedBy=timers.target

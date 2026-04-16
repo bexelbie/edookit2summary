@@ -1,0 +1,8 @@
+{
+  "_nss": "1",
+  "X-EdooCacheId": "YOUR-CACHE-ID",
+  "X-Auth-Id": "YOUR-AUTH-ID",
+  "PHPSESSID": "YOUR-SESSION-ID",
+  "uu.app.csrf": "YOUR-CSRF-TOKEN",
+  "last_run": "2026-01-01T00:00:00"
+}

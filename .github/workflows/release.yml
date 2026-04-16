@@ -1,0 +1,28 @@
+# ABOUTME: Creates a GitHub Release from the tagged commit message.
+# ABOUTME: Triggered by pushing v* tags. Release notes come from the commit message.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on main
+        run: git merge-base --is-ancestor "${{ github.sha }}" origin/main
+
+      - name: Create GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" --notes-from-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
