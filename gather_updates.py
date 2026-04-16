@@ -20,6 +20,7 @@ from edookit import (
 # Item types in display order, mapped to CSS class used in the inbox
 ITEM_TYPES = [
     ("assignment", "Assignments"),
+    ("actionRequired", "Requires Action"),
     ("inboxMessage", "Messages"),
     ("exam", "Written Tests"),
     ("poll", "Polls"),
@@ -158,6 +159,47 @@ def filter_new_items(items, last_run):
     return [i for i in items if i["timestamp"] and i["timestamp"] > last_run]
 
 
+def parse_action_items(html):
+    """Parse the 'Requires Action' widget from the main dashboard page.
+
+    Returns a list of dicts with keys: type, name, info, url, icon_type.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    container = soup.find("div", id="requires-action-container")
+    if not container:
+        return []
+
+    items = []
+    for item_div in container.select("div.item-container"):
+        link = item_div.find("a", class_="item")
+        if not link:
+            continue
+
+        url = link.get("href", "")
+        name_div = link.find("div", class_="name")
+        info_div = link.find("div", class_="additional-info")
+        icon_div = link.find("div", class_="icon")
+
+        name = name_div.get_text(strip=True) if name_div else ""
+        info = info_div.get_text(strip=True) if info_div else ""
+
+        # Icon class tells us what kind of action (payment, poll, etc.)
+        icon_type = ""
+        if icon_div:
+            icon_classes = [c for c in icon_div.get("class", []) if c != "icon"]
+            icon_type = icon_classes[0] if icon_classes else ""
+
+        items.append({
+            "type": "actionRequired",
+            "name": name,
+            "info": info,
+            "url": url,
+            "icon_type": icon_type,
+        })
+
+    return items
+
+
 def fetch_item_detail(item, cookies, cookies_file):
     """Fetch the detail page for an inbox item and return parsed fields."""
     if not item["url"]:
@@ -282,6 +324,21 @@ def format_generic(item, detail):
     return "\n".join(lines)
 
 
+def format_action_item(action):
+    """Format a single 'Requires Action' item as markdown."""
+    lines = []
+    url = BASE_URL + action["url"] if action.get("url") else ""
+    icon = action.get("icon_type", "")
+    type_label = icon.capitalize() if icon else "Action"
+    if url:
+        lines.append(f"- **{type_label}:** [{action['name']}]({url})")
+    else:
+        lines.append(f"- **{type_label}:** {action['name']}")
+    if action.get("info"):
+        lines.append(f"  {action['info']}")
+    return "\n".join(lines)
+
+
 FORMATTERS = {
     "assignment": format_assignment,
     "inboxMessage": format_message,
@@ -292,13 +349,22 @@ FORMATTERS = {
 }
 
 
-def format_summary(items_by_type, details_by_url):
+def format_summary(items_by_type, details_by_url, action_items=None):
     """Build the full markdown summary."""
     sections = []
 
     type_labels = dict(ITEM_TYPES)
 
     for type_key, label in ITEM_TYPES:
+        # Action items use a different data structure
+        if type_key == "actionRequired":
+            if action_items:
+                section_lines = [f"## {label}\n"]
+                for action in action_items:
+                    section_lines.append(format_action_item(action))
+                sections.append("\n\n".join(section_lines))
+            continue
+
         items = items_by_type.get(type_key, [])
         if not items:
             continue
@@ -375,7 +441,18 @@ def main():
 
     new_items = filter_new_items(all_items, last_run)
 
-    if not new_items:
+    # Fetch "Requires Action" widget from the dashboard
+    action_items = []
+    try:
+        print("Checking dashboard for action items...", file=sys.stderr)
+        dash_html = fetch_page(BASE_URL + "/", cookies, args.cookies_file)
+        action_items = parse_action_items(dash_html)
+        if action_items:
+            print(f"Found {len(action_items)} action item(s).", file=sys.stderr)
+    except (AuthError, RuntimeError) as e:
+        print(f"Warning: could not fetch action items: {e}", file=sys.stderr)
+
+    if not new_items and not action_items:
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
@@ -427,7 +504,7 @@ def main():
                     print(f"  Warning: {e}", file=sys.stderr)
 
         # Generate summary
-        output = format_summary(items_by_type, details_by_url)
+        output = format_summary(items_by_type, details_by_url, action_items)
 
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
@@ -447,7 +524,8 @@ def main():
         # Send email unless dry-run
         email_failed = False
         if not is_dry and config.get("smtp_host"):
-            subject = f"Edookit: {len(new_items)} new update(s)"
+            n_items = len(new_items) + len(action_items)
+            subject = f"Edookit: {n_items} new update(s)"
             try:
                 print("Sending email...", file=sys.stderr)
                 send_email(subject, output, config, downloaded_files)
