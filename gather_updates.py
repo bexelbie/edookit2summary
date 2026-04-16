@@ -441,18 +441,7 @@ def main():
 
     new_items = filter_new_items(all_items, last_run)
 
-    # Fetch "Requires Action" widget from the dashboard
-    action_items = []
-    try:
-        print("Checking dashboard for action items...", file=sys.stderr)
-        dash_html = fetch_page(BASE_URL + "/", cookies, args.cookies_file)
-        action_items = parse_action_items(dash_html)
-        if action_items:
-            print(f"Found {len(action_items)} action item(s).", file=sys.stderr)
-    except (AuthError, RuntimeError) as e:
-        print(f"Warning: could not fetch action items: {e}", file=sys.stderr)
-
-    if not new_items and not action_items:
+    if not new_items:
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
@@ -474,6 +463,18 @@ def main():
         sys.exit(0)
 
     print(f"Found {len(new_items)} new item(s), fetching details...", file=sys.stderr)
+
+    # Fetch "Requires Action" widget from the dashboard (only when there are
+    # new items — action items are undated, so we include them as a reminder
+    # alongside real updates but never trigger an email on their own)
+    action_items = []
+    try:
+        dash_html = fetch_page(BASE_URL + "/", cookies, args.cookies_file)
+        action_items = parse_action_items(dash_html)
+        if action_items:
+            print(f"Including {len(action_items)} action item(s) as reminder.", file=sys.stderr)
+    except (AuthError, RuntimeError) as e:
+        print(f"Warning: could not fetch action items: {e}", file=sys.stderr)
 
     # Group by type
     items_by_type = {}
@@ -524,8 +525,7 @@ def main():
         # Send email unless dry-run
         email_failed = False
         if not is_dry and config.get("smtp_host"):
-            n_items = len(new_items) + len(action_items)
-            subject = f"Edookit: {n_items} new update(s)"
+            subject = f"Edookit: {len(new_items)} new update(s)"
             try:
                 print("Sending email...", file=sys.stderr)
                 send_email(subject, output, config, downloaded_files)
