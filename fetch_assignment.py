@@ -82,10 +82,13 @@ def parse_assignment(html):
     """Extract assignment fields from an edookit assignment detail page."""
     soup = BeautifulSoup(html, "html.parser")
 
-    # Check if we got the login page instead of content
+    # Detect authentication failures: login page, redirect to login, etc.
     title = soup.find("title")
     if title and "Přihlašovací" in title.text:
-        raise RuntimeError("Not authenticated — got login page. Check cookies.")
+        raise RuntimeError("Not authenticated — got login page. Cookies expired.")
+    login_link = soup.find("a", href=lambda h: h and "/user/login" in h)
+    if login_link:
+        raise RuntimeError("Not authenticated — redirected to login. Cookies expired.")
 
     fields = {}
 
@@ -146,14 +149,32 @@ def parse_assignment(html):
 
         fields[label] = text
 
+    if not fields:
+        raise RuntimeError(
+            "No assignment data found in page. "
+            "The page may have an unexpected format, or the assignment ID may be invalid."
+        )
+
     return fields
+
+
+COOKIE_REFRESH_INSTRUCTIONS = """\
+To refresh cookies:
+  1. Open https://zshusova.edookit.net in Chrome/Firefox
+  2. Log in with your Plus4U account
+  3. Open DevTools (F12) → Network tab
+  4. Click any request to zshusova.edookit.net
+  5. Under Request Headers, copy the Cookie: line
+  6. Update cookies.json with these keys:
+     _nss, X-EdooCacheId, X-Auth-Id, PHPSESSID, uu.app.csrf"""
 
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: fetch_assignment.py <url> [cookies.json]")
         print("  cookies.json should contain a JSON object with cookie key-value pairs.")
-        print("  See README.md for how to obtain cookies.")
+        print()
+        print(COOKIE_REFRESH_INSTRUCTIONS)
         sys.exit(1)
 
     url = sys.argv[1]
@@ -162,12 +183,20 @@ def main():
     try:
         cookies = load_cookies(cookies_file)
     except FileNotFoundError:
-        print(f"Cookie file not found: {cookies_file}", file=sys.stderr)
-        print("See README.md for how to create it.", file=sys.stderr)
+        print(f"Error: Cookie file not found: {cookies_file}", file=sys.stderr)
+        print(file=sys.stderr)
+        print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
         sys.exit(1)
 
     html = fetch_page(url, cookies, cookies_file)
-    fields = parse_assignment(html)
+
+    try:
+        fields = parse_assignment(html)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print(file=sys.stderr)
+        print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
+        sys.exit(1)
 
     print(json.dumps(fields, indent=2, ensure_ascii=False))
 
