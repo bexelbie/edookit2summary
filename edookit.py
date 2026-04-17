@@ -147,6 +147,59 @@ def check_auth(soup):
         raise AuthError("Not authenticated — redirected to login. Cookies expired.")
 
 
+def keepalive(cookies, cookies_file):
+    """Ping the front page to refresh the server-side session.
+
+    Raises AuthError if the session has expired.
+    """
+    html = fetch_page(BASE_URL + "/", cookies, cookies_file)
+    soup = BeautifulSoup(html, "html.parser")
+    check_auth(soup)
+
+
+def is_work_time(last_run):
+    """Check whether the current time falls within a configured work window.
+
+    Reads WORK_HOURS_WEEKDAY, WORK_HOURS_WEEKEND, and WORK_TIMEZONE from
+    the environment.  Returns True when the current hour matches a work
+    hour and last_run is before the start of that hour slot (prevents
+    double-runs from the 30-minute timer).
+
+    Returns False (keepalive-only) when any env var is missing so that
+    the schedule is opt-in.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    tz_name = os.environ.get("WORK_TIMEZONE")
+    weekday_str = os.environ.get("WORK_HOURS_WEEKDAY")
+    weekend_str = os.environ.get("WORK_HOURS_WEEKEND")
+
+    if not all([tz_name, weekday_str, weekend_str]):
+        return False
+
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+
+    if now.weekday() < 5:
+        work_hours = [int(h) for h in weekday_str.split(",")]
+    else:
+        work_hours = [int(h) for h in weekend_str.split(",")]
+
+    if now.hour not in work_hours:
+        return False
+
+    # Prevent double-run within the same hour slot
+    if last_run is not None:
+        slot_start = now.replace(minute=0, second=0, microsecond=0)
+        if last_run.tzinfo is None:
+            last_run = last_run.replace(tzinfo=tz)
+        if last_run >= slot_start:
+            return False
+
+    return True
+
+
 def parse_detail_page(html):
     """Extract fields from any edookit detail page (assignment, message, evaluation, etc.).
 

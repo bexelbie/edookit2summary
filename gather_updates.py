@@ -13,7 +13,7 @@ from edookit import (
     AuthError, TranslationError, COOKIE_REFRESH_INSTRUCTIONS, BASE_URL,
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     check_azure_openai, translate_to_english, download_attachment, send_email,
-    load_config, render_email_html,
+    load_config, render_email_html, keepalive, is_work_time,
 )
 
 
@@ -421,6 +421,23 @@ def main():
             last_run = datetime.fromisoformat(last_run_str)
         except ValueError:
             pass
+
+    # Schedule check: dry-run always runs the full pipeline; otherwise
+    # check whether the current time falls in a work window.
+    if not is_dry and not is_work_time(last_run):
+        print("Not a work window — keepalive only.", file=sys.stderr)
+        try:
+            keepalive(cookies, args.cookies_file)
+            print("Keepalive OK.", file=sys.stderr)
+        except AuthError as e:
+            msg = (
+                f"Edookit session expired. Cookies need to be refreshed.\n\n"
+                f"{COOKIE_REFRESH_INSTRUCTIONS}"
+            )
+            print(f"Error: {e}", file=sys.stderr)
+            _send_alert_email("Edookit: cookies expired", msg, config)
+            sys.exit(1)
+        sys.exit(0)
 
     # Fetch and parse inbox
     print("Fetching inbox...", file=sys.stderr)
