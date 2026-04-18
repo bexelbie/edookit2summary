@@ -422,13 +422,11 @@ def main():
         except ValueError:
             pass
 
-    # Schedule check: dry-run always runs the full pipeline; otherwise
-    # check whether the current time falls in a work window.
-    if not is_dry and not is_work_time(last_run):
-        print("Not a work window — keepalive only.", file=sys.stderr)
+    # Ensure session is alive (triggers OIDC refresh if token has expired)
+    if not is_dry:
         try:
             keepalive(cookies, args.cookies_file)
-            print("Keepalive OK.", file=sys.stderr)
+            print("Session OK.", file=sys.stderr)
         except AuthError as e:
             msg = (
                 f"Edookit session expired. Cookies need to be refreshed.\n\n"
@@ -437,6 +435,11 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             _send_alert_email("Edookit: cookies expired", msg, config)
             sys.exit(1)
+
+    # Schedule check: dry-run always runs the full pipeline; otherwise
+    # check whether the current time falls in a work window.
+    if not is_dry and not is_work_time(last_run):
+        print("Not a work window — done.", file=sys.stderr)
         sys.exit(0)
 
     # Fetch and parse inbox
