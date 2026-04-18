@@ -4,5 +4,10 @@
   "X-Auth-Id": "YOUR-AUTH-ID",
   "PHPSESSID": "YOUR-SESSION-ID",
   "uu.app.csrf": "YOUR-CSRF-TOKEN",
+  "plus4u": {
+    "uoid.ps": "YOUR-PLUS4U-PERSISTENT-SESSION",
+    "uoid.s": "YOUR-PLUS4U-SESSION",
+    "uoid.bs": "YOUR-PLUS4U-BROWSER-SESSION"
+  },
   "last_run": "2026-01-01T00:00:00"
 }

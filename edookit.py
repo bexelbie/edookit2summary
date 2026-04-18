@@ -1,15 +1,17 @@
 # ABOUTME: Shared library for edookit.net: page fetching, parsing, translation, and email.
-# ABOUTME: Handles cookie management, authentication, Azure OpenAI, and SMTP delivery.
+# ABOUTME: Handles cookie management, OIDC session refresh, Azure OpenAI, and SMTP delivery.
 
 import json
 import os
 import re
+import secrets
 import smtplib
 import subprocess
 import sys
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib.parse import urlencode
 
 
 try:
@@ -23,13 +25,23 @@ COOKIE_REFRESH_INSTRUCTIONS = """\
 To refresh cookies:
   1. Open https://zshusova.edookit.net in Chrome/Firefox
   2. Log in with your Plus4U account
-  3. Open DevTools (F12) → Network tab
-  4. Click any request to zshusova.edookit.net
-  5. Under Request Headers, copy the Cookie: line
-  6. Update cookies.json with these keys:
-     _nss, X-EdooCacheId, X-Auth-Id, PHPSESSID, uu.app.csrf"""
+  3. Open DevTools (F12) → Application → Cookies
+  4. From zshusova.edookit.net, copy to cookies.json:
+     _nss, X-EdooCacheId, X-Auth-Id, PHPSESSID, uu.app.csrf
+  5. From uuidentity.plus4u.net, copy to cookies.json under "plus4u":
+     uoid.ps, uoid.s, uoid.bs"""
 
 BASE_URL = "https://zshusova.edookit.net"
+
+_EDOOKIT_COOKIE_KEYS = ["_nss", "X-EdooCacheId", "X-Auth-Id", "PHPSESSID", "uu.app.csrf"]
+
+# Plus4U identity provider OIDC configuration for automatic session refresh.
+_OIDC_AUTH_URL = (
+    "https://uuidentity.plus4u.net"
+    "/uu-oidc-maing02/bb977a99f4cc4c37a2afce3fd599d0a7/oidc/auth"
+)
+_OIDC_CLIENT_ID = "0fa24fa43e794de89003790253a93cb6"
+_OIDC_REDIRECT_URI = "https://zshusova.edookit.net/user/oidc-login-callback"
 
 
 class AuthError(RuntimeError):
@@ -113,9 +125,8 @@ def fetch_page(url, cookies, cookies_file=None):
     If cookies_file is provided, any refreshed cookies from the response
     are written back to keep the session alive.
     """
-    cookie_keys = ["_nss", "X-EdooCacheId", "X-Auth-Id", "PHPSESSID", "uu.app.csrf"]
     cookie_str = "; ".join(
-        f"{k}={cookies[k]}" for k in cookie_keys if k in cookies
+        f"{k}={cookies[k]}" for k in _EDOOKIT_COOKIE_KEYS if k in cookies
     )
     result = subprocess.run(
         ["curl", "-s", "-D", "-", "-b", cookie_str, url],
@@ -147,11 +158,99 @@ def check_auth(soup):
         raise AuthError("Not authenticated — redirected to login. Cookies expired.")
 
 
-def keepalive(cookies, cookies_file):
-    """Ping the front page to refresh the server-side session.
+def refresh_oidc_session(cookies, cookies_file):
+    """Refresh the edookit session via the Plus4U OIDC authorization flow.
 
-    Raises AuthError if the session has expired.
+    Replays the browser's silent token renewal: requests an authorization
+    code from the Plus4U identity provider, then exchanges it at the
+    edookit callback endpoint for fresh session cookies.
+
+    Raises AuthError if the Plus4U session has also expired.
     """
+    plus4u = cookies.get("plus4u")
+    if not plus4u:
+        raise AuthError(
+            "Session expired and no Plus4U cookies available for refresh.\n"
+            + COOKIE_REFRESH_INSTRUCTIONS
+        )
+
+    plus4u_cookie_str = "; ".join(f"{k}={v}" for k, v in plus4u.items())
+
+    # Request authorization code from Plus4U
+    params = urlencode({
+        "response_type": "code",
+        "client_id": _OIDC_CLIENT_ID,
+        "redirect_uri": _OIDC_REDIRECT_URI,
+        "scope": "openid",
+        "state": secrets.token_urlsafe(16),
+    })
+    auth_url = f"{_OIDC_AUTH_URL}?{params}"
+
+    result = subprocess.run(
+        ["curl", "-s", "-D", "-", "-o", "/dev/null",
+         "-b", plus4u_cookie_str, auth_url],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"OIDC auth request failed: {result.stderr}")
+
+    # Extract callback URL from Location header
+    callback_url = None
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("location:"):
+            callback_url = line.split(":", 1)[1].strip()
+            break
+
+    if not callback_url or "code=" not in callback_url:
+        raise AuthError(
+            "Plus4U session expired — could not obtain authorization code.\n"
+            + COOKIE_REFRESH_INSTRUCTIONS
+        )
+
+    # Exchange authorization code at edookit callback (follows internal redirects)
+    edookit_cookie_str = "; ".join(
+        f"{k}={cookies[k]}" for k in _EDOOKIT_COOKIE_KEYS if k in cookies
+    )
+    if not callback_url.startswith("http"):
+        callback_url = BASE_URL + callback_url
+
+    result = subprocess.run(
+        ["curl", "-s", "-L", "-D", "-", "-o", "/dev/null",
+         "-b", edookit_cookie_str, callback_url],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"OIDC callback failed: {result.stderr}")
+
+    if not _update_cookies_from_headers(cookies, result.stdout):
+        raise AuthError(
+            "OIDC token exchange produced no cookie updates.\n"
+            + COOKIE_REFRESH_INSTRUCTIONS
+        )
+
+    save_cookies(cookies, cookies_file)
+
+
+def keepalive(cookies, cookies_file):
+    """Ensure the edookit session is alive, refreshing via OIDC if needed.
+
+    Checks the session with a page fetch. If the OIDC token has expired,
+    refreshes it using the Plus4U identity provider. Raises AuthError
+    only when both sessions have expired.
+    """
+    html = fetch_page(BASE_URL + "/", cookies, cookies_file)
+    soup = BeautifulSoup(html, "html.parser")
+    try:
+        check_auth(soup)
+        return
+    except AuthError:
+        pass
+
+    print("Session expired, attempting OIDC refresh...", file=sys.stderr)
+    refresh_oidc_session(cookies, cookies_file)
+    print("OIDC refresh successful.", file=sys.stderr)
+
+    # Verify the refreshed session works
     html = fetch_page(BASE_URL + "/", cookies, cookies_file)
     soup = BeautifulSoup(html, "html.parser")
     check_auth(soup)
@@ -282,9 +381,8 @@ def download_attachment(download_url, cookies, dest_dir):
 
     Uses curl -L to follow edookit's redirect chain.
     """
-    cookie_keys = ["_nss", "X-EdooCacheId", "X-Auth-Id", "PHPSESSID", "uu.app.csrf"]
     cookie_str = "; ".join(
-        f"{k}={cookies[k]}" for k in cookie_keys if k in cookies
+        f"{k}={cookies[k]}" for k in _EDOOKIT_COOKIE_KEYS if k in cookies
     )
 
     url = BASE_URL + download_url if download_url.startswith("/") else download_url

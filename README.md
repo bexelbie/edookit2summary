@@ -101,33 +101,32 @@ systemctl --user daemon-reload
 systemctl --user enable --now edookit2summary.timer
 ```
 
-The timer runs on weekdays every 2 hours from 15:00–21:00 and on weekends at
-08:00 and 20:00 (Europe/Prague).
+The timer runs at configured work hours (see `edookit2summary.env.example`
+for schedule settings). Sessions are refreshed automatically via OIDC.
 
 ## Cookie session management
 
-Edookit uses Plus4U OIDC authentication. There's no way to automate the login
-flow, so cookies must be grabbed manually from a browser session.
-
-### Obtaining cookies (first time or after expiry)
-
-1. Open https://zshusova.edookit.net in Chrome/Firefox
-2. Log in with your Plus4U account
-3. Open DevTools (F12) → **Network** tab
-4. Navigate to any page on the site (e.g. the dashboard)
-5. Click the first request to `zshusova.edookit.net` in the network list
-6. Under **Request Headers**, find the `Cookie:` line
-7. Extract these five cookies and put them in `cookies.json`:
-   `_nss`, `X-EdooCacheId`, `X-Auth-Id`, `PHPSESSID`, `uu.app.csrf`
+Edookit uses Plus4U OIDC authentication. The initial login must be done
+manually in a browser, but subsequent session renewals happen automatically.
 
 ### How session renewal works
 
-- `PHPSESSID` expires after ~14 days but each authenticated request resets
-  the timer.
-- `uu.app.csrf` changes on every response — the script captures and saves the
-  new value automatically.
-- `X-Auth-Id` and `X-EdooCacheId` appear to be stable across sessions.
-- If cookies expire, the tool sends an alert email and exits with code 1.
+- The edookit OIDC token expires every ~30–60 minutes
+- When the token expires, the script automatically refreshes it using the
+  Plus4U identity cookie — no manual intervention needed
+- The Plus4U identity cookie (`uoid.ps`) lasts ~19 days
+- If the Plus4U identity cookie also expires, the tool sends an alert email
+  and manual cookie refresh is required
+
+### Obtaining cookies (first time or after Plus4U expiry)
+
+1. Open https://zshusova.edookit.net in Chrome/Firefox
+2. Log in with your Plus4U account
+3. Open DevTools (F12) → **Application** → **Cookies**
+4. From `zshusova.edookit.net`, copy these cookies to `cookies.json`:
+   `_nss`, `X-EdooCacheId`, `X-Auth-Id`, `PHPSESSID`, `uu.app.csrf`
+5. From `uuidentity.plus4u.net`, copy these cookies to the `plus4u` key
+   in `cookies.json`: `uoid.ps`, `uoid.s`, `uoid.bs`
 
 ## Error handling
 
