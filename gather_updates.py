@@ -313,7 +313,7 @@ def format_generic(item, detail):
     if desc:
         for line in desc.splitlines():
             lines.append(f"  {line}")
-    date_time = (detail or {}).get("Date and time", "")
+    date_time = (detail or {}).get("Date and time") or (detail or {}).get("Date", "")
     if date_time:
         lines.append(f"  When: {date_time}")
     course = _clean_course((detail or {}).get("Course", ""))
