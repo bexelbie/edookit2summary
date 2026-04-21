@@ -201,6 +201,18 @@ def parse_action_items(html):
     return items
 
 
+def fetch_item_detail(item, cookies, cookies_file):
+    """Fetch the detail page for an inbox item and return parsed fields."""
+    if not item["url"]:
+        return None
+    url = BASE_URL + item["url"]
+    html = fetch_page(url, cookies, cookies_file)
+    try:
+        return parse_detail_page(html)
+    except (AuthError, RuntimeError):
+        return None
+
+
 def parse_upcoming_events(html):
     """Parse the /timetable/upcoming page into a list of upcoming events.
 
@@ -241,7 +253,7 @@ def parse_upcoming_events(html):
         date_col = cols[0]
         # The date is in the first <b> tag
         bold = date_col.find("b")
-        event_date_str = bold.get_text(strip=True) if bold else ""
+        event_date_str = " ".join(bold.get_text().split()) if bold else ""
 
         # Column 1: title + description
         desc_col = cols[1]
