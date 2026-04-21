@@ -431,7 +431,7 @@ def parse_event_date(date_str, school_year=None):
     return candidate
 
 
-
+def download_attachment(download_url, cookies, dest_dir):
     """Download an attachment to dest_dir. Returns (filepath, filename).
 
     Uses curl -L to follow edookit's redirect chain.
