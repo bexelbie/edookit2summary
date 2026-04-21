@@ -446,14 +446,19 @@ def download_attachment(download_url, cookies, dest_dir):
     tmp_path = os.path.join(dest_dir, "download.tmp")
     result = subprocess.run(
         ["curl", "-s", "-L", "-D", "-", "-o", tmp_path, "-b", cookie_str, url],
-        capture_output=True, text=True
+        capture_output=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Attachment download failed: {result.stderr}")
+        raise RuntimeError(
+            f"Attachment download failed: {result.stderr.decode('utf-8', errors='replace')}"
+        )
+
+    # Headers may contain non-UTF-8 bytes (Czech filenames); decode as latin-1
+    headers_text = result.stdout.decode("latin-1")
 
     # Extract filename from Content-Disposition header
     filename = None
-    for line in result.stdout.splitlines():
+    for line in headers_text.splitlines():
         if line.lower().startswith("content-disposition:"):
             match = re.search(r'filename="?([^";\n]+)"?', line)
             if match:
