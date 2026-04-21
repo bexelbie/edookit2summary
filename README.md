@@ -9,6 +9,8 @@ and emails a summary. Designed to run on a systemd timer in a container.
 - Scrapes the edookit inbox for new assignments, messages, evaluations, exams,
   polls, and events
 - Fetches detail pages and downloads any attachments
+- Includes an upcoming events calendar (next 60 days by default) with 🆕
+  markers on newly posted events
 - Translates the summary from Czech to English (falls back to Czech if the
   model is unavailable)
 - Emails the result as both plain text and HTML with attachments
@@ -41,6 +43,7 @@ See `edookit2summary.env.example` for the full list:
 | `SMTP_PORT` | SMTP server port |
 | `EMAIL_FROM` | Sender address |
 | `EMAIL_TO` | Recipient address |
+| `EVENT_LOOKAHEAD_DAYS` | How far ahead to show upcoming events (default `60`) |
 
 ## Usage
 

@@ -5,13 +5,14 @@ import json
 import re
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from bs4 import BeautifulSoup
 
 from edookit import (
     AuthError, TranslationError, COOKIE_REFRESH_INSTRUCTIONS, BASE_URL,
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
+    parse_event_date,
     check_azure_openai, translate_to_english, download_attachment, send_email,
     load_config, render_email_html, keepalive, is_work_time,
 )
@@ -212,6 +213,114 @@ def fetch_item_detail(item, cookies, cookies_file):
         return None
 
 
+def parse_upcoming_events(html):
+    """Parse the /timetable/upcoming page into a list of upcoming events.
+
+    Returns (events, school_year) where events is a list of dicts with keys:
+    title, description, url, event_date_str, creator, created_str.
+    school_year is a string like '2025/26' from the term selector.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    check_auth(soup)
+
+    # Extract school year from the term selector
+    school_year = None
+    term_el = soup.find("a", class_="selected", id="selected-term")
+    if term_el:
+        school_year = term_el.get_text(strip=True)
+
+    events = []
+    table = soup.find("div", class_="events_table")
+    if not table:
+        return events, school_year
+
+    for row in table.find_all("ul", class_="table_row"):
+        # Skip header rows (no onclick)
+        onclick = row.get("onclick", "")
+        if not onclick:
+            continue
+
+        url = None
+        url_match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)', onclick)
+        if url_match:
+            url = url_match.group(1)
+
+        cols = row.find_all("li", recursive=False)
+        if len(cols) < 3:
+            continue
+
+        # Column 0: event date
+        date_col = cols[0]
+        # The date is in the first <b> tag
+        bold = date_col.find("b")
+        event_date_str = " ".join(bold.get_text().split()) if bold else ""
+
+        # Column 1: title + description
+        desc_col = cols[1]
+        title_el = desc_col.find("span")
+        title = title_el.get_text(strip=True) if title_el else ""
+
+        # Description is in the second <p> (after the title div)
+        desc_ps = desc_col.find_all("p")
+        description = ""
+        if len(desc_ps) >= 2:
+            description = desc_ps[-1].get_text(strip=True)
+
+        # Column 2: creator + created date
+        creator_col = cols[2]
+        creator_b = creator_col.find("b")
+        creator = creator_b.get_text(strip=True) if creator_b else ""
+
+        events.append({
+            "title": title,
+            "description": description,
+            "url": url,
+            "event_date_str": event_date_str,
+            "creator": creator,
+        })
+
+    return events, school_year
+
+
+_DEFAULT_LOOKAHEAD_DAYS = 60
+
+
+def fetch_upcoming_events(cookies, cookies_file, config):
+    """Fetch upcoming events within the look-ahead window.
+
+    Returns a list of event dicts sorted by date, each with an added
+    'event_date' (datetime.date) key.
+    """
+    lookahead = int(config.get("event_lookahead_days", _DEFAULT_LOOKAHEAD_DAYS))
+    today = date.today()
+    cutoff = today + timedelta(days=lookahead)
+
+    html = fetch_page(BASE_URL + "/timetable/upcoming", cookies, cookies_file)
+    events, school_year = parse_upcoming_events(html)
+
+    result = []
+    for ev in events:
+        ev_date = parse_event_date(ev["event_date_str"], school_year)
+        if ev_date and today <= ev_date <= cutoff:
+            ev["event_date"] = ev_date
+            result.append(ev)
+
+    result.sort(key=lambda e: e["event_date"])
+    return result
+
+
+
+    """Fetch the detail page for an inbox item and return parsed fields."""
+    if not item["url"]:
+        return None
+    url = BASE_URL + item["url"]
+    html = fetch_page(url, cookies, cookies_file)
+    try:
+        return parse_detail_page(html)
+    except (AuthError, RuntimeError):
+        return None
+
+
 def _clean_course(course_str):
     """Extract just the subject abbreviation from a course string.
 
@@ -339,6 +448,27 @@ def format_action_item(action):
     return "\n".join(lines)
 
 
+def format_upcoming_event(event, is_new=False):
+    """Format a single upcoming event as markdown.
+
+    Events from /timetable/upcoming have a different structure than inbox
+    items — they carry event_date_str, title, description, url directly.
+    """
+    lines = []
+    marker = "🆕 " if is_new else ""
+    url = BASE_URL + event["url"] if event.get("url") else ""
+    if url:
+        lines.append(f"- {marker}**[{event['title']}]({url})**")
+    else:
+        lines.append(f"- {marker}**{event['title']}**")
+    if event.get("description"):
+        for line in event["description"].splitlines():
+            lines.append(f"  {line}")
+    if event.get("event_date_str"):
+        lines.append(f"  When: {event['event_date_str']}")
+    return "\n".join(lines)
+
+
 FORMATTERS = {
     "assignment": format_assignment,
     "inboxMessage": format_message,
@@ -349,7 +479,8 @@ FORMATTERS = {
 }
 
 
-def format_summary(items_by_type, details_by_url, action_items=None):
+def format_summary(items_by_type, details_by_url, action_items=None,
+                   upcoming_events=None, new_event_urls=None):
     """Build the full markdown summary."""
     sections = []
 
@@ -363,6 +494,16 @@ def format_summary(items_by_type, details_by_url, action_items=None):
                 for action in action_items:
                     section_lines.append(format_action_item(action))
                 sections.append("\n\n".join(section_lines))
+            continue
+
+        # Events section: merge new inbox events with upcoming calendar
+        if type_key == "event" and upcoming_events:
+            new_urls = new_event_urls or set()
+            section_lines = [f"## {label}\n"]
+            for event in upcoming_events:
+                is_new = event.get("url", "") in new_urls
+                section_lines.append(format_upcoming_event(event, is_new))
+            sections.append("\n\n".join(section_lines))
             continue
 
         items = items_by_type.get(type_key, [])
@@ -496,6 +637,26 @@ def main():
     except (AuthError, RuntimeError) as e:
         print(f"Warning: could not fetch action items: {e}", file=sys.stderr)
 
+    # Fetch upcoming events calendar
+    upcoming_events = []
+    new_event_urls = set()
+    try:
+        print("Fetching upcoming events...", file=sys.stderr)
+        upcoming_events = fetch_upcoming_events(cookies, args.cookies_file, config)
+        # Determine which upcoming events are also new in the inbox
+        new_event_urls = {
+            i["url"] for i in new_items if i["type"] == "event" and i["url"]
+        }
+        if upcoming_events:
+            new_count = sum(1 for e in upcoming_events if e.get("url") in new_event_urls)
+            print(
+                f"Including {len(upcoming_events)} upcoming event(s) "
+                f"({new_count} new).",
+                file=sys.stderr,
+            )
+    except (AuthError, RuntimeError) as e:
+        print(f"Warning: could not fetch upcoming events: {e}", file=sys.stderr)
+
     # Group by type
     items_by_type = {}
     for item in new_items:
@@ -525,7 +686,10 @@ def main():
                     print(f"  Warning: {e}", file=sys.stderr)
 
         # Generate summary
-        output = format_summary(items_by_type, details_by_url, action_items)
+        output = format_summary(
+            items_by_type, details_by_url, action_items,
+            upcoming_events=upcoming_events, new_event_urls=new_event_urls,
+        )
 
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False

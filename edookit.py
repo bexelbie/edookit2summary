@@ -8,6 +8,7 @@ import secrets
 import smtplib
 import subprocess
 import sys
+from datetime import date
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -69,6 +70,7 @@ _ENV_MAP = {
     "smtp_port":                "SMTP_PORT",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
 }
 
 
@@ -374,6 +376,59 @@ def parse_detail_page(html):
     fields["attachments"] = attachments
 
     return fields
+
+
+def parse_event_date(date_str, school_year=None):
+    """Parse an edookit event date string into a datetime.date.
+
+    Extracts the start date from strings like '8. 5.', '22. 4., from 9:00
+    to 11:30', 'from 2. 4. to 6. 4.', '17. 11. 2025'.
+
+    school_year is a string like '2025/26'. When present and the date has
+    no year, months Aug-Dec map to the first year, Jan-Jul to the second.
+    Without school_year, assumes the nearest occurrence (current or next
+    calendar year).
+    """
+    if not date_str:
+        return None
+
+    # Normalize whitespace (thin spaces, non-breaking spaces)
+    text = re.sub(r"[\u2009\u00a0\u202f]+", " ", date_str.strip())
+
+    # Strip leading "from " to get at the start date
+    text = re.sub(r"^from\s+", "", text, flags=re.IGNORECASE)
+
+    # Extract first d. m. or d. m. yyyy pattern
+    m = re.match(r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})?", text)
+    if not m:
+        return None
+
+    day, month = int(m.group(1)), int(m.group(2))
+    year_str = m.group(3)
+
+    if year_str:
+        return date(int(year_str), month, day)
+
+    if school_year:
+        # Parse "2025/26" → (2025, 2026)
+        parts = school_year.split("/")
+        start_year = int(parts[0])
+        end_suffix = parts[1] if len(parts) > 1 else ""
+        if len(end_suffix) == 2:
+            end_year = int(str(start_year)[:2] + end_suffix)
+        elif len(end_suffix) == 4:
+            end_year = int(end_suffix)
+        else:
+            end_year = start_year + 1
+        year = start_year if month >= 8 else end_year
+        return date(year, month, day)
+
+    # No school year context — pick the nearest occurrence
+    today = date.today()
+    candidate = date(today.year, month, day)
+    if (today - candidate).days > 180:
+        candidate = date(today.year + 1, month, day)
+    return candidate
 
 
 def download_attachment(download_url, cookies, dest_dir):
