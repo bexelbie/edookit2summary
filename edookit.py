@@ -74,6 +74,7 @@ _ENV_MAP = {
     "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
 }
 

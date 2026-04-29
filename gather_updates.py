@@ -586,6 +586,11 @@ def main():
 
     new_items = filter_new_items(all_items, last_run)
 
+    max_updates = int(config.get("max_updates", 50))
+    if len(new_items) > max_updates:
+        print(f"Limiting {len(new_items)} new updates to {max_updates}.", file=sys.stderr)
+        new_items = new_items[:max_updates]
+
     if not new_items:
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
