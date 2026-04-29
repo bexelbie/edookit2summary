@@ -531,7 +531,7 @@ def _gemini_chat(config, text):
         raise TranslationError("Gemini not configured — missing GEMINI_API_KEY")
 
     key = config["gemini_api_key"]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key={key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={key}"
 
     payload = {
         "contents": [{"parts": [{"text": text}]}]
