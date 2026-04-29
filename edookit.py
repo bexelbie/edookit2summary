@@ -67,6 +67,7 @@ _ENV_MAP = {
     "azure_openai_deployment":  "AZURE_OPENAI_DEPLOYMENT",
     "azure_openai_api_version": "AZURE_OPENAI_API_VERSION",
     "gemini_api_key":           "GEMINI_API_KEY",
+    "target_language":          "TARGET_LANGUAGE",
     "smtp_host":                "SMTP_HOST",
     "smtp_port":                "SMTP_PORT",
     "smtp_user":                "SMTP_USER",
@@ -472,8 +473,9 @@ def _azure_openai_chat(config, messages, max_tokens=None):
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
             "-H", f"api-key: {config['azure_openai_key']}",
-            "-d", json.dumps(payload),
+            "-d", "@-",
         ],
+        input=json.dumps(payload),
         capture_output=True, text=True
     )
 
@@ -540,8 +542,9 @@ def _gemini_chat(config, text):
             "curl", "-s", "-w", "\n%{http_code}",
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
-            "-d", json.dumps(payload),
+            "-d", "@-",
         ],
+        input=json.dumps(payload),
         capture_output=True, text=True
     )
 
@@ -564,8 +567,8 @@ def _gemini_chat(config, text):
         raise TranslationError(f"Gemini returned invalid or unexpected JSON: {body[:200]}")
 
 
-def translate_to_english(text, config):
-    """Translate Czech text to English using Azure OpenAI.
+def translate_text(text, config):
+    """Translate Czech text to the target language using the configured LLM.
 
     Preserves markdown formatting. Returns the translated text, or the
     original text with a warning if translation fails.
@@ -573,11 +576,13 @@ def translate_to_english(text, config):
     if not text or not text.strip():
         return text
 
+    target_lang = config.get("target_language", "English")
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You translate Czech school notifications to English. "
+                f"You translate Czech school notifications to {target_lang}. "
                 "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
                 "The student is currently in first grade (I.B is the class section).\n\n"
                 "Common Czech subject abbreviations:\n"
