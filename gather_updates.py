@@ -13,7 +13,7 @@ from edookit import (
     AuthError, TranslationError, COOKIE_REFRESH_INSTRUCTIONS, BASE_URL,
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     parse_event_date,
-    check_llm_config, translate_to_english, download_attachment, send_email,
+    check_llm_config, translate_text, download_attachment, send_email,
     load_config, render_email_html, keepalive,
 )
 
@@ -677,8 +677,9 @@ def main():
 
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
-        print("Translating to English...", file=sys.stderr)
-        translated = translate_to_english(output, config)
+        target_lang = config.get("target_language", "English")
+        print(f"Translating to {target_lang}...", file=sys.stderr)
+        translated = translate_text(output, config)
         if translated.startswith("[Translation failed:"):
             print("Warning: translation failed, using Czech.", file=sys.stderr)
             translation_failed = True
