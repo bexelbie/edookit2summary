@@ -532,40 +532,53 @@ def _gemini_chat(config, text):
         raise TranslationError("Gemini not configured — missing GEMINI_API_KEY")
 
     key = config["gemini_api_key"]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={key}"
+    payload_str = json.dumps({"contents": [{"parts": [{"text": text}]}]})
 
-    payload = {
-        "contents": [{"parts": [{"text": text}]}]
-    }
+    models = [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-pro-preview"
+    ]
 
-    result = subprocess.run(
-        [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "-X", "POST", url,
-            "-H", "Content-Type: application/json",
-            "-d", "@-",
-        ],
-        input=json.dumps(payload),
-        capture_output=True, text=True
-    )
+    import time
+    while True:
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            
+            result = subprocess.run(
+                [
+                    "curl", "-s", "-w", "\n%{http_code}",
+                    "-X", "POST", url,
+                    "-H", "Content-Type: application/json",
+                    "-d", "@-",
+                ],
+                input=payload_str,
+                capture_output=True, text=True
+            )
 
-    if result.returncode != 0:
-        raise TranslationError(f"curl failed reaching Gemini: {result.stderr}")
+            if result.returncode != 0:
+                print(f"curl failed reaching Gemini ({model}): {result.stderr}", file=sys.stderr)
+                continue
 
-    lines = result.stdout.rsplit("\n", 1)
-    body = lines[0] if len(lines) > 1 else result.stdout
-    status = lines[-1].strip() if len(lines) > 1 else ""
+            lines = result.stdout.rsplit("\n", 1)
+            body = lines[0] if len(lines) > 1 else result.stdout
+            status = lines[-1].strip() if len(lines) > 1 else ""
 
-    if not status.startswith("2"):
-        raise TranslationError(f"Gemini returned HTTP {status}: {body[:200]}")
+            if not status.startswith("2"):
+                print(f"Gemini ({model}) returned HTTP {status}: {body[:200]}", file=sys.stderr)
+                continue
 
-    try:
-        data = json.loads(body)
-        if "candidates" in data and len(data["candidates"]) > 0:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        return ""
-    except (json.JSONDecodeError, KeyError, IndexError):
-        raise TranslationError(f"Gemini returned invalid or unexpected JSON: {body[:200]}")
+            try:
+                data = json.loads(body)
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                return ""
+            except (json.JSONDecodeError, KeyError, IndexError):
+                print(f"Gemini ({model}) returned invalid JSON: {body[:200]}", file=sys.stderr)
+                continue
+                
+        print("All Gemini models failed. Waiting 2 minutes before retrying...", file=sys.stderr)
+        time.sleep(120)
 
 
 def translate_text(text, config):
