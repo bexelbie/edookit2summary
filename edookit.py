@@ -69,6 +69,8 @@ _ENV_MAP = {
     "gemini_api_key":           "GEMINI_API_KEY",
     "smtp_host":                "SMTP_HOST",
     "smtp_port":                "SMTP_PORT",
+    "smtp_user":                "SMTP_USER",
+    "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
@@ -710,5 +712,19 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
 
     host = config["smtp_host"]
     port = int(config["smtp_port"])
-    with smtplib.SMTP(host, port) as server:
+    
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port)
+    else:
+        server = smtplib.SMTP(host, port)
+        try:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+        except smtplib.SMTPNotSupportedError:
+            pass  # server doesn't support TLS, proceed anyway
+
+    with server:
+        if config.get("smtp_user") and config.get("smtp_pass"):
+            server.login(config["smtp_user"], config["smtp_pass"])
         server.sendmail(from_addr, [to_addr], msg.as_string())
