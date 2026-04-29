@@ -66,6 +66,7 @@ _ENV_MAP = {
     "azure_openai_key":         "AZURE_OPENAI_KEY",
     "azure_openai_deployment":  "AZURE_OPENAI_DEPLOYMENT",
     "azure_openai_api_version": "AZURE_OPENAI_API_VERSION",
+    "gemini_api_key":           "GEMINI_API_KEY",
     "smtp_host":                "SMTP_HOST",
     "smtp_port":                "SMTP_PORT",
     "email_from":               "EMAIL_FROM",
@@ -435,6 +436,8 @@ AZURE_OPENAI_CONFIG_KEYS = [
     "azure_openai_deployment", "azure_openai_api_version",
 ]
 
+GEMINI_CONFIG_KEYS = ["gemini_api_key"]
+
 
 def _azure_openai_chat(config, messages, max_tokens=None):
     """Send a chat completion request to Azure OpenAI.
@@ -503,17 +506,60 @@ def _azure_openai_chat(config, messages, max_tokens=None):
         raise TranslationError(f"Azure OpenAI returned invalid JSON: {body[:200]}")
 
 
-def check_azure_openai(config):
-    """Verify that the Azure OpenAI deployment is reachable.
+def check_llm_config(config):
+    """Verify that the configured LLM is reachable.
 
     Sends a minimal completion request. Raises TranslationError if the
     deployment is unavailable, retired, or misconfigured.
     """
-    _azure_openai_chat(
-        config,
-        messages=[{"role": "user", "content": "Say OK"}],
-        max_tokens=3,
+    if config.get("gemini_api_key"):
+        _gemini_chat(config, text="Say OK")
+    else:
+        _azure_openai_chat(
+            config,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=3,
+        )
+
+def _gemini_chat(config, text):
+    """Send a chat completion request to Gemini."""
+    if not config.get("gemini_api_key"):
+        raise TranslationError("Gemini not configured — missing GEMINI_API_KEY")
+
+    key = config["gemini_api_key"]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key={key}"
+
+    payload = {
+        "contents": [{"parts": [{"text": text}]}]
+    }
+
+    result = subprocess.run(
+        [
+            "curl", "-s", "-w", "\n%{http_code}",
+            "-X", "POST", url,
+            "-H", "Content-Type: application/json",
+            "-d", json.dumps(payload),
+        ],
+        capture_output=True, text=True
     )
+
+    if result.returncode != 0:
+        raise TranslationError(f"curl failed reaching Gemini: {result.stderr}")
+
+    lines = result.stdout.rsplit("\n", 1)
+    body = lines[0] if len(lines) > 1 else result.stdout
+    status = lines[-1].strip() if len(lines) > 1 else ""
+
+    if not status.startswith("2"):
+        raise TranslationError(f"Gemini returned HTTP {status}: {body[:200]}")
+
+    try:
+        data = json.loads(body)
+        if "candidates" in data and len(data["candidates"]) > 0:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        return ""
+    except (json.JSONDecodeError, KeyError, IndexError):
+        raise TranslationError(f"Gemini returned invalid or unexpected JSON: {body[:200]}")
 
 
 def translate_to_english(text, config):
@@ -559,8 +605,12 @@ def translate_to_english(text, config):
     ]
 
     try:
-        resp = _azure_openai_chat(config, messages)
-        return resp["choices"][0]["message"]["content"]
+        if config.get("gemini_api_key"):
+            prompt = messages[0]["content"] + "\n\nText to translate:\n" + messages[1]["content"]
+            return _gemini_chat(config, prompt)
+        else:
+            resp = _azure_openai_chat(config, messages)
+            return resp["choices"][0]["message"]["content"]
     except (TranslationError, KeyError, IndexError) as e:
         # Don't fail the whole run if translation breaks — return original
         # with a note

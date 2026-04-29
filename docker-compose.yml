@@ -1,0 +1,16 @@
+services:
+  edookit:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: edookit-summary
+    # 挂载你的配置文件
+    env_file:
+      - .env
+    environment:
+      - CRON_INTERVAL=3600 # 3600秒 (1小时) 执行一次，你可以按需修改
+    # 挂载 Cookie 数据文件
+    volumes:
+      - ./cookies.json:/data/cookies.json
+    # 容器崩溃或重启服务器后自动拉起
+    restart: unless-stopped
