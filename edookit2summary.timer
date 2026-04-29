@@ -1,11 +1,11 @@
 # ABOUTME: Systemd timer for edookit summary gatherer.
-# ABOUTME: Fires every 30 minutes; the script decides whether to work or just keepalive.
+# ABOUTME: Fires daily at 15:00 to check for new school notifications.
 
 [Unit]
 Description=Edookit school notification check
 
 [Timer]
-OnCalendar=*-*-* *:00,30:00
+OnCalendar=*-*-* 15:00:00
 Persistent=true
 Unit=edookit2summary.service
 

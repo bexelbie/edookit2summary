@@ -14,7 +14,7 @@ from edookit import (
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     parse_event_date,
     check_azure_openai, translate_to_english, download_attachment, send_email,
-    load_config, render_email_html, keepalive, is_work_time,
+    load_config, render_email_html, keepalive,
 )
 
 
@@ -576,12 +576,6 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             _send_alert_email("Edookit: cookies expired", msg, config)
             sys.exit(1)
-
-    # Schedule check: dry-run always runs the full pipeline; otherwise
-    # check whether the current time falls in a work window.
-    if not is_dry and not is_work_time(last_run):
-        print("Not a work window — done.", file=sys.stderr)
-        sys.exit(0)
 
     # Fetch and parse inbox
     print("Fetching inbox...", file=sys.stderr)
