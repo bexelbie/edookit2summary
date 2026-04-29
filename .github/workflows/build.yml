@@ -1,17 +1,11 @@
-# ABOUTME: Builds and pushes the container image to ghcr.io on pushes to main and version tags.
-# ABOUTME: Tags images as :latest on main, :vX.Y.Z on release tags.
+# ABOUTME: Builds and pushes the container image to ghcr.io.
+# ABOUTME: Called by release.yml on v* tags or triggered manually. Tags images :vX.Y.Z and :latest.
 
 name: Build container
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - "edookit.py"
-      - "gather_updates.py"
-      - "requirements.txt"
-      - "Containerfile"
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   packages: write
