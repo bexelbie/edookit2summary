@@ -9,10 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY edookit.py gather_updates.py entrypoint.sh ./
-RUN chmod +x entrypoint.sh
+COPY edookit.py gather_updates.py ./
 
 # Config and state live on a bind-mounted volume
 VOLUME /data
 
-CMD ["/app/entrypoint.sh"]
+ENTRYPOINT ["python3", "/app/gather_updates.py", "/data/cookies.json"]
