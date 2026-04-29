@@ -732,4 +732,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
     with server:
         if config.get("smtp_user") and config.get("smtp_pass"):
             server.login(config["smtp_user"], config["smtp_pass"])
-        server.sendmail(from_addr, [to_addr], msg.as_string())
+            
+        # Support multiple comma-separated emails
+        to_addrs = [email.strip() for email in to_addr.split(",") if email.strip()]
+        server.sendmail(from_addr, to_addrs, msg.as_string())
