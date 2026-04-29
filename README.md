@@ -104,8 +104,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now edookit2summary.timer
 ```
 
-The timer runs at configured work hours (see `edookit2summary.env.example`
-for schedule settings). Sessions are refreshed automatically via OIDC.
+The timer runs daily at 15:00. Adjust `OnCalendar=` in the timer file to
+change the schedule. Sessions are refreshed automatically via OIDC.
 
 ## Cookie session management
 
