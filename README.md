@@ -35,26 +35,47 @@ See `edookit2summary.env.example` for the full list:
 
 ### General Settings
 
-| Variable               | Description                                             |
-| ---------------------- | ------------------------------------------------------- |
-| `TARGET_LANGUAGE`      | Target language for translation (default `English`)     |
-| `MAX_UPDATES`          | Max number of updates to process at once (default `50`) |
-| `EVENT_LOOKAHEAD_DAYS` | How far ahead to show upcoming events (default `60`)    |
+| Variable               | Description                                                  |
+| ---------------------- | ------------------------------------------------------------ |
+| `TARGET_LANGUAGE`      | Target language for translation (default `English`)          |
+| `MAX_UPDATES`          | Max number of updates to process at once (default `50`)      |
+| `EVENT_LOOKAHEAD_DAYS` | How far ahead to show upcoming events (default `60`)         |
+| `LLM_MAX_RETRIES`     | Retry cycles across all LLM providers before giving up (`3`) |
 
 ### LLM: Gemini
 
-| Variable         | Description           |
-| ---------------- | --------------------- |
-| `GEMINI_API_KEY` | Google Gemini API key |
+| Variable         | Description                                                                                                    |
+| ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| `GEMINI_API_KEY` | Google Gemini API key                                                                                          |
+| `GEMINI_MODELS`  | Comma-separated model list (default `gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-3.1-pro-preview`) |
 
 ### LLM: Azure OpenAI
 
-| Variable                   | Description                                |
-| -------------------------- | ------------------------------------------ |
-| `AZURE_OPENAI_ENDPOINT`    | Azure OpenAI base URL                      |
-| `AZURE_OPENAI_KEY`         | Azure API key                              |
-| `AZURE_OPENAI_DEPLOYMENT`  | Model deployment name (e.g. `gpt-4o-mini`) |
-| `AZURE_OPENAI_API_VERSION` | API version (e.g. `2025-01-01-preview`)    |
+| Variable                   | Description                                                     |
+| -------------------------- | --------------------------------------------------------------- |
+| `AZURE_OPENAI_ENDPOINT`    | Azure OpenAI base URL                                           |
+| `AZURE_OPENAI_KEY`         | Azure API key                                                   |
+| `AZURE_OPENAI_DEPLOYMENT`  | Comma-separated deployment names (default `gpt-4.1-nano`)      |
+| `AZURE_OPENAI_API_VERSION` | API version (e.g. `2025-01-01-preview`)                         |
+
+### LLM failover
+
+When both Gemini and Azure are configured, the system uses **cross-provider
+failover**: Gemini models are tried first, then Azure models.  On failure the
+next model is tried immediately with no delay.  After every model in every
+provider has been tried once (one "cycle"), the system sleeps 2 minutes and
+starts the next cycle.  It gives up after `LLM_MAX_RETRIES` cycles (default 3).
+
+If only one provider is configured, the same retry logic applies — each
+configured model is tried in order, with 2-minute pauses between cycles.
+
+> **Known limitation — credential visibility in process listings.**
+> LLM API keys are passed as HTTP headers to `curl` subprocesses.  While
+> they no longer appear in URLs, header values are visible via `ps` or
+> `/proc/*/cmdline` to other users on the same host.  If this is a concern,
+> run the container with an isolated PID namespace (the default for
+> Podman/Docker) or switch the HTTP calls to a Python library in a
+> future refactor.
 
 ### SMTP Settings
 
@@ -155,9 +176,10 @@ manually in a browser, but subsequent session renewals happen automatically.
 
 ## Error handling
 
-| Condition                      | Behavior                                             |
-| ------------------------------ | ---------------------------------------------------- |
-| Cookies expired                | Alert email sent, exit 1                             |
-| Translation failed             | Czech text included with error note in email, exit 1 |
-| SMTP failed                    | Output still printed to stdout, exit 1               |
-| Model unavailable (idle check) | Alert email sent, exit 0                             |
+| Condition                                 | Behavior                                             |
+| ----------------------------------------- | ---------------------------------------------------- |
+| Cookies expired                           | Alert email sent, exit 1                             |
+| Translation failed                        | Czech text included with error note in email, exit 1 |
+| SMTP failed                               | Output still printed to stdout, exit 1               |
+| SMTP credentials without TLS              | Refuses to connect, exit 1                           |
+| LLM unreachable (no-updates health check) | Alert email sent, exit 0                             |
