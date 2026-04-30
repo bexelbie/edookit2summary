@@ -66,10 +66,15 @@ _ENV_MAP = {
     "azure_openai_key":         "AZURE_OPENAI_KEY",
     "azure_openai_deployment":  "AZURE_OPENAI_DEPLOYMENT",
     "azure_openai_api_version": "AZURE_OPENAI_API_VERSION",
+    "gemini_api_key":           "GEMINI_API_KEY",
+    "target_language":          "TARGET_LANGUAGE",
     "smtp_host":                "SMTP_HOST",
     "smtp_port":                "SMTP_PORT",
+    "smtp_user":                "SMTP_USER",
+    "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
 }
 
@@ -435,6 +440,8 @@ AZURE_OPENAI_CONFIG_KEYS = [
     "azure_openai_deployment", "azure_openai_api_version",
 ]
 
+GEMINI_CONFIG_KEYS = ["gemini_api_key"]
+
 
 def _azure_openai_chat(config, messages, max_tokens=None):
     """Send a chat completion request to Azure OpenAI.
@@ -467,8 +474,9 @@ def _azure_openai_chat(config, messages, max_tokens=None):
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
             "-H", f"api-key: {config['azure_openai_key']}",
-            "-d", json.dumps(payload),
+            "-d", "@-",
         ],
+        input=json.dumps(payload),
         capture_output=True, text=True
     )
 
@@ -503,21 +511,78 @@ def _azure_openai_chat(config, messages, max_tokens=None):
         raise TranslationError(f"Azure OpenAI returned invalid JSON: {body[:200]}")
 
 
-def check_azure_openai(config):
-    """Verify that the Azure OpenAI deployment is reachable.
+def check_llm_config(config):
+    """Verify that the configured LLM is reachable.
 
     Sends a minimal completion request. Raises TranslationError if the
     deployment is unavailable, retired, or misconfigured.
     """
-    _azure_openai_chat(
-        config,
-        messages=[{"role": "user", "content": "Say OK"}],
-        max_tokens=3,
-    )
+    if config.get("gemini_api_key"):
+        _gemini_chat(config, text="Say OK")
+    else:
+        _azure_openai_chat(
+            config,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=3,
+        )
+
+def _gemini_chat(config, text):
+    """Send a chat completion request to Gemini."""
+    if not config.get("gemini_api_key"):
+        raise TranslationError("Gemini not configured — missing GEMINI_API_KEY")
+
+    key = config["gemini_api_key"]
+    payload_str = json.dumps({"contents": [{"parts": [{"text": text}]}]})
+
+    models = [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-pro-preview"
+    ]
+
+    import time
+    while True:
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            
+            result = subprocess.run(
+                [
+                    "curl", "-s", "-w", "\n%{http_code}",
+                    "-X", "POST", url,
+                    "-H", "Content-Type: application/json",
+                    "-d", "@-",
+                ],
+                input=payload_str,
+                capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                print(f"curl failed reaching Gemini ({model}): {result.stderr}", file=sys.stderr)
+                continue
+
+            lines = result.stdout.rsplit("\n", 1)
+            body = lines[0] if len(lines) > 1 else result.stdout
+            status = lines[-1].strip() if len(lines) > 1 else ""
+
+            if not status.startswith("2"):
+                print(f"Gemini ({model}) returned HTTP {status}: {body[:200]}", file=sys.stderr)
+                continue
+
+            try:
+                data = json.loads(body)
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                return ""
+            except (json.JSONDecodeError, KeyError, IndexError):
+                print(f"Gemini ({model}) returned invalid JSON: {body[:200]}", file=sys.stderr)
+                continue
+                
+        print("All Gemini models failed. Waiting 2 minutes before retrying...", file=sys.stderr)
+        time.sleep(120)
 
 
-def translate_to_english(text, config):
-    """Translate Czech text to English using Azure OpenAI.
+def translate_text(text, config):
+    """Translate Czech text to the target language using the configured LLM.
 
     Preserves markdown formatting. Returns the translated text, or the
     original text with a warning if translation fails.
@@ -525,11 +590,13 @@ def translate_to_english(text, config):
     if not text or not text.strip():
         return text
 
+    target_lang = config.get("target_language", "English")
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You translate Czech school notifications to English. "
+                f"You translate Czech school notifications to {target_lang}. "
                 "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
                 "The student is currently in first grade (I.B is the class section).\n\n"
                 "Common Czech subject abbreviations:\n"
@@ -559,8 +626,12 @@ def translate_to_english(text, config):
     ]
 
     try:
-        resp = _azure_openai_chat(config, messages)
-        return resp["choices"][0]["message"]["content"]
+        if config.get("gemini_api_key"):
+            prompt = messages[0]["content"] + "\n\nText to translate:\n" + messages[1]["content"]
+            return _gemini_chat(config, prompt)
+        else:
+            resp = _azure_openai_chat(config, messages)
+            return resp["choices"][0]["message"]["content"]
     except (TranslationError, KeyError, IndexError) as e:
         # Don't fail the whole run if translation breaks — return original
         # with a note
@@ -660,5 +731,22 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
 
     host = config["smtp_host"]
     port = int(config["smtp_port"])
-    with smtplib.SMTP(host, port) as server:
-        server.sendmail(from_addr, [to_addr], msg.as_string())
+    
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port)
+    else:
+        server = smtplib.SMTP(host, port)
+        try:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+        except smtplib.SMTPNotSupportedError:
+            pass  # server doesn't support TLS, proceed anyway
+
+    with server:
+        if config.get("smtp_user") and config.get("smtp_pass"):
+            server.login(config["smtp_user"], config["smtp_pass"])
+            
+        # Support multiple comma-separated emails
+        to_addrs = [email.strip() for email in to_addr.split(",") if email.strip()]
+        server.sendmail(from_addr, to_addrs, msg.as_string())

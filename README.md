@@ -30,20 +30,42 @@ python3 -m venv .venv
 **Edookit cookies** (`cookies.json`) — ephemeral session cookies that
 auto-renew on each request. See `cookies.json.example` for the template.
 
-**Static config** (environment variables) — Azure OpenAI and SMTP settings.
+**Static config** (environment variables) — LLM and SMTP settings.
 See `edookit2summary.env.example` for the full list:
 
-| Variable | Description |
-|---|---|
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI base URL |
-| `AZURE_OPENAI_KEY` | API key |
-| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name (e.g. `gpt-4o-mini`) |
-| `AZURE_OPENAI_API_VERSION` | API version (e.g. `2025-01-01-preview`) |
-| `SMTP_HOST` | SMTP server hostname |
-| `SMTP_PORT` | SMTP server port |
-| `EMAIL_FROM` | Sender address |
-| `EMAIL_TO` | Recipient address |
-| `EVENT_LOOKAHEAD_DAYS` | How far ahead to show upcoming events (default `60`) |
+### General Settings
+
+| Variable               | Description                                             |
+| ---------------------- | ------------------------------------------------------- |
+| `TARGET_LANGUAGE`      | Target language for translation (default `English`)     |
+| `MAX_UPDATES`          | Max number of updates to process at once (default `50`) |
+| `EVENT_LOOKAHEAD_DAYS` | How far ahead to show upcoming events (default `60`)    |
+
+### LLM: Gemini
+
+| Variable         | Description           |
+| ---------------- | --------------------- |
+| `GEMINI_API_KEY` | Google Gemini API key |
+
+### LLM: Azure OpenAI
+
+| Variable                   | Description                                |
+| -------------------------- | ------------------------------------------ |
+| `AZURE_OPENAI_ENDPOINT`    | Azure OpenAI base URL                      |
+| `AZURE_OPENAI_KEY`         | Azure API key                              |
+| `AZURE_OPENAI_DEPLOYMENT`  | Model deployment name (e.g. `gpt-4o-mini`) |
+| `AZURE_OPENAI_API_VERSION` | API version (e.g. `2025-01-01-preview`)    |
+
+### SMTP Settings
+
+| Variable     | Description                                       |
+| ------------ | ------------------------------------------------- |
+| `SMTP_HOST`  | SMTP server hostname                              |
+| `SMTP_PORT`  | SMTP server port                                  |
+| `SMTP_USER`  | SMTP username                                     |
+| `SMTP_PASS`  | SMTP password                                     |
+| `EMAIL_FROM` | Sender address                                    |
+| `EMAIL_TO`   | Recipient address (supports comma-separated list) |
 
 ## Usage
 
@@ -133,10 +155,9 @@ manually in a browser, but subsequent session renewals happen automatically.
 
 ## Error handling
 
-| Condition | Behavior |
-|---|---|
-| Cookies expired | Alert email sent, exit 1 |
-| Translation failed | Czech text included with error note in email, exit 1 |
-| SMTP failed | Output still printed to stdout, exit 1 |
-| Model unavailable (idle check) | Alert email sent, exit 0 |
-
+| Condition                      | Behavior                                             |
+| ------------------------------ | ---------------------------------------------------- |
+| Cookies expired                | Alert email sent, exit 1                             |
+| Translation failed             | Czech text included with error note in email, exit 1 |
+| SMTP failed                    | Output still printed to stdout, exit 1               |
+| Model unavailable (idle check) | Alert email sent, exit 0                             |

@@ -13,7 +13,7 @@ from edookit import (
     AuthError, TranslationError, COOKIE_REFRESH_INSTRUCTIONS, BASE_URL,
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     parse_event_date,
-    check_azure_openai, translate_to_english, download_attachment, send_email,
+    check_llm_config, translate_text, download_attachment, send_email,
     load_config, render_email_html, keepalive,
 )
 
@@ -310,16 +310,6 @@ def fetch_upcoming_events(cookies, cookies_file, config):
 
 
 
-    """Fetch the detail page for an inbox item and return parsed fields."""
-    if not item["url"]:
-        return None
-    url = BASE_URL + item["url"]
-    html = fetch_page(url, cookies, cookies_file)
-    try:
-        return parse_detail_page(html)
-    except (AuthError, RuntimeError):
-        return None
-
 
 def _clean_course(course_str):
     """Extract just the subject abbreviation from a course string.
@@ -596,20 +586,25 @@ def main():
 
     new_items = filter_new_items(all_items, last_run)
 
+    max_updates = int(config.get("max_updates", 50))
+    if len(new_items) > max_updates:
+        print(f"Limiting {len(new_items)} new updates to {max_updates}.", file=sys.stderr)
+        new_items = new_items[:max_updates]
+
     if not new_items:
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
-            check_azure_openai(config)
-            print("Azure OpenAI model OK.", file=sys.stderr)
+            check_llm_config(config)
+            print("Translation model OK.", file=sys.stderr)
         except TranslationError as e:
             print(f"Warning: {e}", file=sys.stderr)
             if not is_dry:
                 _send_alert_email(
                     "Edookit: translation model unavailable",
-                    f"The Azure OpenAI model check failed:\n\n{e}\n\n"
+                    f"The LLM model check failed:\n\n{e}\n\n"
                     "Translation will not work until this is fixed. "
-                    "Update the AZURE_OPENAI_DEPLOYMENT environment variable.",
+                    "Update the GEMINI_API_KEY or AZURE_OPENAI_DEPLOYMENT environment variables.",
                     config,
                 )
         if not is_dry:
@@ -687,8 +682,9 @@ def main():
 
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
-        print("Translating to English...", file=sys.stderr)
-        translated = translate_to_english(output, config)
+        target_lang = config.get("target_language", "English")
+        print(f"Translating to {target_lang}...", file=sys.stderr)
+        translated = translate_text(output, config)
         if translated.startswith("[Translation failed:"):
             print("Warning: translation failed, using Czech.", file=sys.stderr)
             translation_failed = True
