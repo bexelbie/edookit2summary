@@ -1,5 +1,5 @@
 # ABOUTME: Shared library for edookit.net: page fetching, parsing, translation, and email.
-# ABOUTME: Handles cookie management, OIDC session refresh, Azure OpenAI, and SMTP delivery.
+# ABOUTME: Handles cookie management, OIDC session refresh, LLM translation (Azure OpenAI / Gemini), and SMTP delivery.
 
 import json
 import os
@@ -8,6 +8,7 @@ import secrets
 import smtplib
 import subprocess
 import sys
+import time
 from datetime import date
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -440,8 +441,6 @@ AZURE_OPENAI_CONFIG_KEYS = [
     "azure_openai_deployment", "azure_openai_api_version",
 ]
 
-GEMINI_CONFIG_KEYS = ["gemini_api_key"]
-
 
 def _azure_openai_chat(config, messages, max_tokens=None):
     """Send a chat completion request to Azure OpenAI.
@@ -519,20 +518,35 @@ def check_llm_config(config):
     """
     if config.get("gemini_api_key"):
         _gemini_chat(config, text="Say OK")
-    else:
+    elif any(config.get(k) for k in AZURE_OPENAI_CONFIG_KEYS):
         _azure_openai_chat(
             config,
             messages=[{"role": "user", "content": "Say OK"}],
             max_tokens=3,
         )
+    else:
+        raise TranslationError(
+            "No LLM configured — set GEMINI_API_KEY or the AZURE_OPENAI_* "
+            "environment variables."
+        )
 
-def _gemini_chat(config, text):
-    """Send a chat completion request to Gemini."""
+_GEMINI_MAX_RETRIES = 3
+
+def _gemini_chat(config, text, system_instruction=None):
+    """Send a chat completion request to Gemini.
+
+    Tries each model in order, retrying up to _GEMINI_MAX_RETRIES full
+    cycles (with a 2-minute pause between cycles). Raises TranslationError
+    if all attempts are exhausted.
+    """
     if not config.get("gemini_api_key"):
         raise TranslationError("Gemini not configured — missing GEMINI_API_KEY")
 
     key = config["gemini_api_key"]
-    payload_str = json.dumps({"contents": [{"parts": [{"text": text}]}]})
+    payload = {"contents": [{"parts": [{"text": text}]}]}
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    payload_str = json.dumps(payload)
 
     models = [
         "gemini-3-flash-preview",
@@ -540,16 +554,20 @@ def _gemini_chat(config, text):
         "gemini-3.1-pro-preview"
     ]
 
-    import time
-    while True:
+    last_error = ""
+    for attempt in range(_GEMINI_MAX_RETRIES):
         for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta"
+                f"/models/{model}:generateContent"
+            )
+
             result = subprocess.run(
                 [
                     "curl", "-s", "-w", "\n%{http_code}",
                     "-X", "POST", url,
                     "-H", "Content-Type: application/json",
+                    "-H", f"x-goog-api-key: {key}",
                     "-d", "@-",
                 ],
                 input=payload_str,
@@ -557,7 +575,8 @@ def _gemini_chat(config, text):
             )
 
             if result.returncode != 0:
-                print(f"curl failed reaching Gemini ({model}): {result.stderr}", file=sys.stderr)
+                last_error = f"curl failed reaching Gemini ({model}): {result.stderr}"
+                print(last_error, file=sys.stderr)
                 continue
 
             lines = result.stdout.rsplit("\n", 1)
@@ -565,7 +584,8 @@ def _gemini_chat(config, text):
             status = lines[-1].strip() if len(lines) > 1 else ""
 
             if not status.startswith("2"):
-                print(f"Gemini ({model}) returned HTTP {status}: {body[:200]}", file=sys.stderr)
+                last_error = f"Gemini ({model}) returned HTTP {status}: {body[:200]}"
+                print(last_error, file=sys.stderr)
                 continue
 
             try:
@@ -574,11 +594,19 @@ def _gemini_chat(config, text):
                     return data["candidates"][0]["content"]["parts"][0]["text"]
                 return ""
             except (json.JSONDecodeError, KeyError, IndexError):
-                print(f"Gemini ({model}) returned invalid JSON: {body[:200]}", file=sys.stderr)
+                last_error = f"Gemini ({model}) returned invalid JSON: {body[:200]}"
+                print(last_error, file=sys.stderr)
                 continue
-                
-        print("All Gemini models failed. Waiting 2 minutes before retrying...", file=sys.stderr)
-        time.sleep(120)
+
+        if attempt < _GEMINI_MAX_RETRIES - 1:
+            print(
+                f"All Gemini models failed (attempt {attempt + 1}/{_GEMINI_MAX_RETRIES}). "
+                "Waiting 2 minutes before retrying...",
+                file=sys.stderr,
+            )
+            time.sleep(120)
+
+    raise TranslationError(f"All Gemini models failed after {_GEMINI_MAX_RETRIES} attempts: {last_error}")
 
 
 def translate_text(text, config):
@@ -627,8 +655,11 @@ def translate_text(text, config):
 
     try:
         if config.get("gemini_api_key"):
-            prompt = messages[0]["content"] + "\n\nText to translate:\n" + messages[1]["content"]
-            return _gemini_chat(config, prompt)
+            return _gemini_chat(
+                config,
+                text=messages[1]["content"],
+                system_instruction=messages[0]["content"],
+            )
         else:
             resp = _azure_openai_chat(config, messages)
             return resp["choices"][0]["message"]["content"]
@@ -731,7 +762,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
 
     host = config["smtp_host"]
     port = int(config["smtp_port"])
-    
+
     if port == 465:
         server = smtplib.SMTP_SSL(host, port)
     else:
@@ -746,7 +777,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
     with server:
         if config.get("smtp_user") and config.get("smtp_pass"):
             server.login(config["smtp_user"], config["smtp_pass"])
-            
+
         # Support multiple comma-separated emails
         to_addrs = [email.strip() for email in to_addr.split(",") if email.strip()]
         server.sendmail(from_addr, to_addrs, msg.as_string())
