@@ -1,5 +1,5 @@
 # ABOUTME: Shared library for edookit.net: page fetching, parsing, translation, and email.
-# ABOUTME: Handles cookie management, OIDC session refresh, Azure OpenAI, and SMTP delivery.
+# ABOUTME: Handles cookie management, OIDC session refresh, LLM translation (Azure OpenAI / Gemini), and SMTP delivery.
 
 import json
 import os
@@ -8,6 +8,7 @@ import secrets
 import smtplib
 import subprocess
 import sys
+import time
 from datetime import date
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -66,10 +67,17 @@ _ENV_MAP = {
     "azure_openai_key":         "AZURE_OPENAI_KEY",
     "azure_openai_deployment":  "AZURE_OPENAI_DEPLOYMENT",
     "azure_openai_api_version": "AZURE_OPENAI_API_VERSION",
+    "gemini_api_key":           "GEMINI_API_KEY",
+    "gemini_models":            "GEMINI_MODELS",
+    "target_language":          "TARGET_LANGUAGE",
+    "llm_max_retries":          "LLM_MAX_RETRIES",
     "smtp_host":                "SMTP_HOST",
     "smtp_port":                "SMTP_PORT",
+    "smtp_user":                "SMTP_USER",
+    "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
 }
 
@@ -435,22 +443,19 @@ AZURE_OPENAI_CONFIG_KEYS = [
     "azure_openai_deployment", "azure_openai_api_version",
 ]
 
+_DEFAULT_GEMINI_MODELS = "gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-3.1-pro-preview"
+_DEFAULT_AZURE_DEPLOYMENT = "gpt-4.1-nano"
+_DEFAULT_LLM_MAX_RETRIES = 3
+_RETRY_SLEEP_SECONDS = 120
 
-def _azure_openai_chat(config, messages, max_tokens=None):
-    """Send a chat completion request to Azure OpenAI.
 
-    Returns the response body as a parsed dict. Raises TranslationError
-    on HTTP errors or misconfiguration.
+def _azure_openai_chat(config, messages, deployment, max_tokens=None):
+    """Send a single chat completion request to an Azure OpenAI deployment.
+
+    Returns the extracted text content. Raises TranslationError on any
+    failure so the retry loop can try the next provider/model.
     """
-    missing = [k for k in AZURE_OPENAI_CONFIG_KEYS if not config.get(k)]
-    if missing:
-        env_names = [_ENV_MAP[k] for k in missing]
-        raise TranslationError(
-            f"Azure OpenAI not configured — missing env vars: {', '.join(env_names)}"
-        )
-
     endpoint = config["azure_openai_endpoint"].rstrip("/")
-    deployment = config["azure_openai_deployment"]
     api_version = config["azure_openai_api_version"]
     url = (
         f"{endpoint}/openai/deployments/{deployment}"
@@ -461,14 +466,18 @@ def _azure_openai_chat(config, messages, max_tokens=None):
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
 
+    # NOTE: API key is in curl args (visible via ps). Payload goes via stdin
+    # to avoid body exposure.  A future refactor could use a Python HTTP
+    # library to keep headers in-process.  Container PID namespaces mitigate.
     result = subprocess.run(
         [
             "curl", "-s", "-w", "\n%{http_code}",
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
             "-H", f"api-key: {config['azure_openai_key']}",
-            "-d", json.dumps(payload),
+            "-d", "@-",
         ],
+        input=json.dumps(payload),
         capture_output=True, text=True
     )
 
@@ -498,26 +507,158 @@ def _azure_openai_chat(config, messages, max_tokens=None):
         )
 
     try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        raise TranslationError(f"Azure OpenAI returned invalid JSON: {body[:200]}")
+        data = json.loads(body)
+        return data["choices"][0]["message"]["content"]
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        raise TranslationError(f"Azure OpenAI returned invalid response: {e} — {body[:200]}")
 
 
-def check_azure_openai(config):
-    """Verify that the Azure OpenAI deployment is reachable.
+def _gemini_chat(config, text, model, system_instruction=None):
+    """Send a single chat completion request to a Gemini model.
 
-    Sends a minimal completion request. Raises TranslationError if the
-    deployment is unavailable, retired, or misconfigured.
+    Returns the extracted text content. Raises TranslationError on any
+    failure so the retry loop can try the next provider/model.
     """
-    _azure_openai_chat(
-        config,
-        messages=[{"role": "user", "content": "Say OK"}],
-        max_tokens=3,
+    key = config["gemini_api_key"]
+    payload = {"contents": [{"parts": [{"text": text}]}]}
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta"
+        f"/models/{model}:generateContent"
+    )
+
+    # NOTE: API key in curl args — see Azure comment for rationale.
+    result = subprocess.run(
+        [
+            "curl", "-s", "-w", "\n%{http_code}",
+            "-X", "POST", url,
+            "-H", "Content-Type: application/json",
+            "-H", f"x-goog-api-key: {key}",
+            "-d", "@-",
+        ],
+        input=json.dumps(payload),
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        raise TranslationError(f"curl failed reaching Gemini ({model}): {result.stderr}")
+
+    lines = result.stdout.rsplit("\n", 1)
+    body = lines[0] if len(lines) > 1 else result.stdout
+    status = lines[-1].strip() if len(lines) > 1 else ""
+
+    if not status.startswith("2"):
+        raise TranslationError(f"Gemini ({model}) returned HTTP {status}: {body[:200]}")
+
+    try:
+        data = json.loads(body)
+        candidates = data.get("candidates") or []
+        if candidates:
+            return candidates[0]["content"]["parts"][0]["text"]
+        # No candidates — include promptFeedback so the caller knows why.
+        feedback = data.get("promptFeedback", "none")
+        raise TranslationError(
+            f"Gemini ({model}) returned no candidates "
+            f"(promptFeedback: {feedback})"
+        )
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        raise TranslationError(f"Gemini ({model}) returned invalid response: {e} — {body[:200]}")
+
+
+def _get_llm_providers(config):
+    """Build an ordered list of (provider_name, callable) pairs.
+
+    Gemini is tried first when configured. Each callable accepts
+    (system_prompt, user_text, max_tokens=None) and returns the response
+    text or raises TranslationError.
+    """
+    providers = []
+
+    if config.get("gemini_api_key"):
+        models_str = config.get("gemini_models", _DEFAULT_GEMINI_MODELS)
+        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        for model in models:
+            def _call(system_prompt, user_text, max_tokens=None, _m=model):
+                return _gemini_chat(
+                    config, text=user_text, model=_m,
+                    system_instruction=system_prompt,
+                )
+            providers.append((f"gemini/{model}", _call))
+
+    if config.get("azure_openai_key"):
+        missing = [k for k in AZURE_OPENAI_CONFIG_KEYS
+                   if k != "azure_openai_deployment" and not config.get(k)]
+        if not missing:
+            deployments_str = config.get(
+                "azure_openai_deployment", _DEFAULT_AZURE_DEPLOYMENT
+            )
+            deployments = [d.strip() for d in deployments_str.split(",") if d.strip()]
+            for dep in deployments:
+                def _call(system_prompt, user_text, max_tokens=None, _d=dep):
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_text},
+                    ]
+                    return _azure_openai_chat(
+                        config, messages, deployment=_d, max_tokens=max_tokens,
+                    )
+                providers.append((f"azure/{dep}", _call))
+
+    return providers
+
+
+def _llm_chat(config, system_prompt, user_text, max_tokens=None):
+    """Send a chat request with retry and cross-provider failover.
+
+    Builds a provider list (Gemini first, then Azure) and tries each in
+    order.  On failure the next provider is tried immediately.  After all
+    providers in a cycle have failed, sleeps _RETRY_SLEEP_SECONDS before
+    the next cycle.  Gives up after LLM_MAX_RETRIES cycles.
+    """
+    providers = _get_llm_providers(config)
+    if not providers:
+        raise TranslationError(
+            "No LLM configured — set GEMINI_API_KEY or the AZURE_OPENAI_* "
+            "environment variables."
+        )
+
+    max_retries = int(config.get("llm_max_retries", _DEFAULT_LLM_MAX_RETRIES))
+    last_error = ""
+
+    for cycle in range(max_retries):
+        for name, call_fn in providers:
+            try:
+                return call_fn(system_prompt, user_text, max_tokens=max_tokens)
+            except TranslationError as e:
+                last_error = f"{name}: {e}"
+                print(f"LLM attempt failed ({name}): {e}", file=sys.stderr)
+
+        if cycle < max_retries - 1:
+            print(
+                f"All LLM providers failed (cycle {cycle + 1}/{max_retries}). "
+                f"Waiting {_RETRY_SLEEP_SECONDS}s before retrying...",
+                file=sys.stderr,
+            )
+            time.sleep(_RETRY_SLEEP_SECONDS)
+
+    raise TranslationError(
+        f"All LLM providers failed after {max_retries} cycles: {last_error}"
     )
 
 
-def translate_to_english(text, config):
-    """Translate Czech text to English using Azure OpenAI.
+def check_llm_config(config):
+    """Verify that at least one configured LLM is reachable.
+
+    Sends a minimal completion request through the retry/failover loop.
+    Raises TranslationError if every provider is unavailable.
+    """
+    _llm_chat(config, system_prompt="", user_text="Say OK", max_tokens=3)
+
+
+def translate_text(text, config):
+    """Translate Czech text to the target language using the configured LLM.
 
     Preserves markdown formatting. Returns the translated text, or the
     original text with a warning if translation fails.
@@ -525,43 +666,38 @@ def translate_to_english(text, config):
     if not text or not text.strip():
         return text
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You translate Czech school notifications to English. "
-                "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
-                "The student is currently in first grade (I.B is the class section).\n\n"
-                "Common Czech subject abbreviations:\n"
-                "- Čj = Czech language (Český jazyk)\n"
-                "- M = Mathematics (Matematika)\n"
-                "- Prv = Social studies/science for early grades (Prvouka)\n"
-                "- Aj = English language (Anglický jazyk)\n"
-                "- Tv = Physical education (Tělesná výchova)\n"
-                "- Vv = Art (Výtvarná výchova)\n"
-                "- Hv = Music (Hudební výchova)\n"
-                "- Pč = Crafts/practical activities (Pracovní činnosti)\n\n"
-                "Common terms:\n"
-                "- DÚ = homework (domácí úkol)\n"
-                "- Písemná práce = written test\n"
-                "- Obecné hodnocení = general assessment\n"
-                "- Třídní schůzky = parent-teacher meetings\n\n"
-                "Rules:\n"
-                "- Preserve all markdown formatting, structure, and line breaks exactly\n"
-                "- Keep all dates, times, and numbers unchanged\n"
-                "- Keep all personal names unchanged (e.g., Mgr. Vladimíra Kolková)\n"
-                "- Keep textbook and workbook names in Czech (e.g., Slabikář, Písanka, Živá abeceda)\n"
-                "- Translate subject names in titles (e.g., 'Čj - I.B' → 'Czech - I.B')\n"
-                "- Output only the translated text, no commentary"
-            ),
-        },
-        {"role": "user", "content": text},
-    ]
+    target_lang = config.get("target_language", "English")
+
+    system_prompt = (
+        f"You translate Czech school notifications to {target_lang}. "
+        "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
+        "The student is currently in first grade (I.B is the class section).\n\n"
+        "Common Czech subject abbreviations:\n"
+        "- Čj = Czech language (Český jazyk)\n"
+        "- M = Mathematics (Matematika)\n"
+        "- Prv = Social studies/science for early grades (Prvouka)\n"
+        "- Aj = English language (Anglický jazyk)\n"
+        "- Tv = Physical education (Tělesná výchova)\n"
+        "- Vv = Art (Výtvarná výchova)\n"
+        "- Hv = Music (Hudební výchova)\n"
+        "- Pč = Crafts/practical activities (Pracovní činnosti)\n\n"
+        "Common terms:\n"
+        "- DÚ = homework (domácí úkol)\n"
+        "- Písemná práce = written test\n"
+        "- Obecné hodnocení = general assessment\n"
+        "- Třídní schůzky = parent-teacher meetings\n\n"
+        "Rules:\n"
+        "- Preserve all markdown formatting, structure, and line breaks exactly\n"
+        "- Keep all dates, times, and numbers unchanged\n"
+        "- Keep all personal names unchanged (e.g., Mgr. Vladimíra Kolková)\n"
+        "- Keep textbook and workbook names in Czech (e.g., Slabikář, Písanka, Živá abeceda)\n"
+        "- Translate subject names in titles (e.g., 'Čj - I.B' → 'Czech - I.B')\n"
+        "- Output only the translated text, no commentary"
+    )
 
     try:
-        resp = _azure_openai_chat(config, messages)
-        return resp["choices"][0]["message"]["content"]
-    except (TranslationError, KeyError, IndexError) as e:
+        return _llm_chat(config, system_prompt=system_prompt, user_text=text)
+    except TranslationError as e:
         # Don't fail the whole run if translation breaks — return original
         # with a note
         return f"[Translation failed: {e}]\n\n{text}"
@@ -660,5 +796,37 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
 
     host = config["smtp_host"]
     port = int(config["smtp_port"])
-    with smtplib.SMTP(host, port) as server:
-        server.sendmail(from_addr, [to_addr], msg.as_string())
+
+    has_auth = config.get("smtp_user") and config.get("smtp_pass")
+    tls_established = False
+
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port)
+        tls_established = True
+    else:
+        server = smtplib.SMTP(host, port)
+        try:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            tls_established = True
+        except smtplib.SMTPNotSupportedError:
+            if has_auth:
+                server.close()
+                raise RuntimeError(
+                    f"SMTP server {host}:{port} does not support TLS. "
+                    "Refusing to send credentials in plaintext. "
+                    "Use port 465 for implicit TLS, or remove SMTP_USER/SMTP_PASS."
+                )
+
+    with server:
+        if has_auth:
+            if not tls_established:
+                raise RuntimeError(
+                    "Cannot send SMTP credentials without TLS."
+                )
+            server.login(config["smtp_user"], config["smtp_pass"])
+
+        # Support multiple comma-separated emails
+        to_addrs = [email.strip() for email in to_addr.split(",") if email.strip()]
+        server.sendmail(from_addr, to_addrs, msg.as_string())
