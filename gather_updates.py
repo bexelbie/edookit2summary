@@ -553,18 +553,18 @@ def main():
         except ValueError:
             pass
 
-    # Ensure session is alive (triggers OIDC refresh if token has expired)
+    # Ensure session is alive (triggers OIDC refresh or Plus4U login as needed)
     if not is_dry:
         try:
-            keepalive(cookies, args.cookies_file)
+            keepalive(cookies, args.cookies_file, config)
             print("Session OK.", file=sys.stderr)
         except AuthError as e:
-            msg = (
-                f"Edookit session expired. Cookies need to be refreshed.\n\n"
-                f"{COOKIE_REFRESH_INSTRUCTIONS}"
-            )
             print(f"Error: {e}", file=sys.stderr)
-            _send_alert_email("Edookit: cookies expired", msg, config)
+            _send_alert_email(
+                "Edookit: authentication failed",
+                f"Edookit could not authenticate.\n\n{e}",
+                config,
+            )
             sys.exit(1)
 
     # Fetch and parse inbox
@@ -573,15 +573,13 @@ def main():
         inbox_html = fetch_page(BASE_URL + "/overview/updates", cookies, args.cookies_file)
         all_items = parse_inbox(inbox_html)
     except AuthError as e:
-        msg = (
-            f"Edookit session expired. Cookies need to be refreshed.\n\n"
-            f"{COOKIE_REFRESH_INSTRUCTIONS}"
-        )
         print(f"Error: {e}", file=sys.stderr)
-        print(file=sys.stderr)
-        print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
         if not is_dry:
-            _send_alert_email("Edookit: cookies expired", msg, config)
+            _send_alert_email(
+                "Edookit: authentication failed",
+                f"Edookit lost authentication during inbox fetch.\n\n{e}",
+                config,
+            )
         sys.exit(1)
 
     new_items = filter_new_items(all_items, last_run)

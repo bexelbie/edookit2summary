@@ -13,7 +13,7 @@ from datetime import date
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from urllib.parse import urlencode
+from urllib.parse import urlencode, parse_qs, urlparse
 
 
 try:
@@ -31,17 +31,22 @@ To refresh cookies:
   4. From zshusova.edookit.net, copy to cookies.json:
      _nss, X-EdooCacheId, X-Auth-Id, PHPSESSID, uu.app.csrf
   5. From uuidentity.plus4u.net, copy to cookies.json under "plus4u":
-     uoid.ps, uoid.s, uoid.bs"""
+     uoid.ps, uoid.s, uoid.bs
+
+Alternatively, set PLUS4U_EMAIL and PLUS4U_PASSWORD environment
+variables to enable automatic Plus4U login."""
 
 BASE_URL = "https://zshusova.edookit.net"
 
 _EDOOKIT_COOKIE_KEYS = ["_nss", "X-EdooCacheId", "X-Auth-Id", "PHPSESSID", "uu.app.csrf"]
 
 # Plus4U identity provider OIDC configuration for automatic session refresh.
-_OIDC_AUTH_URL = (
+_PLUS4U_BASE = (
     "https://uuidentity.plus4u.net"
-    "/uu-oidc-maing02/bb977a99f4cc4c37a2afce3fd599d0a7/oidc/auth"
+    "/uu-oidc-maing02/bb977a99f4cc4c37a2afce3fd599d0a7"
 )
+_OIDC_AUTH_URL = f"{_PLUS4U_BASE}/oidc/auth"
+_AUTH_PASSWORD_URL = f"{_PLUS4U_BASE}/authPassword/authenticate"
 _OIDC_CLIENT_ID = "0fa24fa43e794de89003790253a93cb6"
 _OIDC_REDIRECT_URI = "https://zshusova.edookit.net/user/oidc-login-callback"
 
@@ -79,6 +84,8 @@ _ENV_MAP = {
     "email_to":                 "EMAIL_TO",
     "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
+    "plus4u_email":             "PLUS4U_EMAIL",
+    "plus4u_password":          "PLUS4U_PASSWORD",
 }
 
 
@@ -168,6 +175,168 @@ def check_auth(soup):
         raise AuthError("Not authenticated — redirected to login. Cookies expired.")
 
 
+def _extract_plus4u_cookies(response_headers):
+    """Parse uoid.* Set-Cookie headers into a dict."""
+    plus4u = {}
+    for line in response_headers.splitlines():
+        if not line.lower().startswith("set-cookie:"):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        name_value = raw.split(";")[0].strip()
+        if "=" in name_value:
+            name, value = name_value.split("=", 1)
+            name = name.strip()
+            if name.startswith("uoid.") and value:
+                plus4u[name] = value
+    return plus4u
+
+
+def login_plus4u(cookies, cookies_file, config):
+    """Log in to Plus4U with credentials and refresh all session cookies.
+
+    Performs the full OIDC login flow: initiates an auth request to get
+    a server-generated state, POSTs credentials to the password auth
+    endpoint, then follows the redirect chain to obtain fresh Plus4U
+    and edookit cookies.
+
+    Requires plus4u_email and plus4u_password in config.
+    Returns session_expires_in (seconds) from the OIDC provider.
+    Raises AuthError if login fails.
+    """
+    email = config.get("plus4u_email")
+    password = config.get("plus4u_password")
+    if not email or not password:
+        raise AuthError(
+            "Plus4U credentials not configured.\n"
+            + COOKIE_REFRESH_INSTRUCTIONS
+        )
+
+    # Step 1: Start OIDC flow without cookies to get a login state
+    params = urlencode({
+        "response_type": "code",
+        "client_id": _OIDC_CLIENT_ID,
+        "redirect_uri": _OIDC_REDIRECT_URI,
+        "scope": "openid",
+        "state": secrets.token_urlsafe(16),
+    })
+    auth_url = f"{_OIDC_AUTH_URL}?{params}"
+
+    result = subprocess.run(
+        ["curl", "-s", "-D", "-", "-o", "/dev/null",
+         "--max-redirs", "0", auth_url],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"OIDC login init failed: {result.stderr}")
+
+    # Extract the login redirect to get the server-generated state
+    login_url = None
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("location:"):
+            login_url = line.split(":", 1)[1].strip()
+            break
+
+    if not login_url or "/login" not in login_url:
+        raise AuthError("OIDC did not redirect to login page — unexpected flow.")
+
+    login_qs = parse_qs(urlparse(login_url).query)
+    state = login_qs.get("state", [None])[0]
+    client_id = login_qs.get("clientId", [_OIDC_CLIENT_ID])[0]
+    if not state:
+        raise AuthError("No state parameter in login redirect.")
+
+    # Step 2: POST credentials to the password auth endpoint
+    auth_body = json.dumps({
+        "clientId": client_id,
+        "state": state,
+        "rememberMe": True,
+        "realmCode": "uuIdentityPasswordAuthNRealm",
+        "username": email,
+        "password": password,
+    })
+
+    result = subprocess.run(
+        ["curl", "-s", "-D", "-", "-o", "/dev/null",
+         "--max-redirs", "0",
+         "-X", "POST",
+         "-H", "Content-Type: application/json",
+         "--data-binary", "@-",
+         _AUTH_PASSWORD_URL],
+        input=auth_body, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"Plus4U login request failed: {result.stderr}")
+
+    # Extract fresh Plus4U cookies from the response
+    plus4u_cookies = _extract_plus4u_cookies(result.stdout)
+    if not plus4u_cookies:
+        raise AuthError(
+            "Plus4U login did not return session cookies. "
+            "Login may have failed (wrong credentials or reCAPTCHA enforced)."
+        )
+
+    cookies["plus4u"] = plus4u_cookies
+    plus4u_cookie_str = "; ".join(f"{k}={v}" for k, v in plus4u_cookies.items())
+
+    # Extract the redirect URL (should point back to OIDC auth)
+    oidc_redirect = None
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("location:"):
+            oidc_redirect = line.split(":", 1)[1].strip()
+            break
+
+    if not oidc_redirect or "/oidc/" not in oidc_redirect:
+        raise AuthError("Plus4U login did not redirect back to OIDC.")
+
+    # Step 3: Follow redirect to OIDC auth with fresh Plus4U cookies
+    result = subprocess.run(
+        ["curl", "-s", "-D", "-", "-o", "/dev/null",
+         "--max-redirs", "0",
+         "-b", plus4u_cookie_str, oidc_redirect],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"OIDC auth after login failed: {result.stderr}")
+
+    callback_url = None
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("location:"):
+            callback_url = line.split(":", 1)[1].strip()
+            break
+
+    if not callback_url or "code=" not in callback_url:
+        raise AuthError("OIDC auth after login did not produce an auth code.")
+
+    # Extract session TTL
+    session_expires_in = None
+    qs = parse_qs(urlparse(callback_url).query)
+    if "session_expires_in" in qs:
+        try:
+            session_expires_in = int(qs["session_expires_in"][0])
+        except (ValueError, IndexError):
+            pass
+
+    # Step 4: Exchange auth code at edookit callback for fresh session cookies
+    edookit_cookie_str = "; ".join(
+        f"{k}={cookies[k]}" for k in _EDOOKIT_COOKIE_KEYS if k in cookies
+    )
+    if not callback_url.startswith("http"):
+        callback_url = BASE_URL + callback_url
+
+    result = subprocess.run(
+        ["curl", "-s", "-L", "-D", "-", "-o", "/dev/null",
+         "-b", edookit_cookie_str, callback_url],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AuthError(f"Edookit callback after login failed: {result.stderr}")
+
+    _update_cookies_from_headers(cookies, result.stdout)
+    save_cookies(cookies, cookies_file)
+    print("Plus4U login successful — cookies refreshed.", file=sys.stderr)
+    return session_expires_in
+
+
 def refresh_oidc_session(cookies, cookies_file):
     """Refresh the edookit session via the Plus4U OIDC authorization flow.
 
@@ -217,6 +386,15 @@ def refresh_oidc_session(cookies, cookies_file):
             + COOKIE_REFRESH_INSTRUCTIONS
         )
 
+    # Extract Plus4U session TTL from the redirect URL
+    session_expires_in = None
+    qs = parse_qs(urlparse(callback_url).query)
+    if "session_expires_in" in qs:
+        try:
+            session_expires_in = int(qs["session_expires_in"][0])
+        except (ValueError, IndexError):
+            pass
+
     # Exchange authorization code at edookit callback (follows internal redirects)
     edookit_cookie_str = "; ".join(
         f"{k}={cookies[k]}" for k in _EDOOKIT_COOKIE_KEYS if k in cookies
@@ -239,31 +417,44 @@ def refresh_oidc_session(cookies, cookies_file):
         )
 
     save_cookies(cookies, cookies_file)
+    return session_expires_in
 
 
-def keepalive(cookies, cookies_file):
+def keepalive(cookies, cookies_file, config=None):
     """Ensure the edookit session is alive, refreshing via OIDC if needed.
 
-    Checks the session with a page fetch. If the OIDC token has expired,
-    refreshes it using the Plus4U identity provider. Raises AuthError
-    only when both sessions have expired.
+    Checks the session with a page fetch. If the edookit token has expired,
+    refreshes it using the Plus4U OIDC cookies. If those have also expired,
+    falls back to a full Plus4U login when credentials are configured.
+
+    Returns session_expires_in (seconds) from the OIDC provider if a
+    refresh was performed, or None if the session was already valid.
     """
     html = fetch_page(BASE_URL + "/", cookies, cookies_file)
     soup = BeautifulSoup(html, "html.parser")
     try:
         check_auth(soup)
-        return
+        return None
     except AuthError:
         pass
 
     print("Session expired, attempting OIDC refresh...", file=sys.stderr)
-    refresh_oidc_session(cookies, cookies_file)
-    print("OIDC refresh successful.", file=sys.stderr)
+    try:
+        session_expires_in = refresh_oidc_session(cookies, cookies_file)
+        print("OIDC refresh successful.", file=sys.stderr)
+    except AuthError:
+        has_creds = (config and config.get("plus4u_email")
+                     and config.get("plus4u_password"))
+        if not has_creds:
+            raise
+        print("Plus4U cookies expired, attempting login...", file=sys.stderr)
+        session_expires_in = login_plus4u(cookies, cookies_file, config)
 
     # Verify the refreshed session works
     html = fetch_page(BASE_URL + "/", cookies, cookies_file)
     soup = BeautifulSoup(html, "html.parser")
     check_auth(soup)
+    return session_expires_in
 
 
 
