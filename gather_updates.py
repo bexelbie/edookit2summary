@@ -539,10 +539,17 @@ def main():
     try:
         cookies = load_cookies(args.cookies_file)
     except FileNotFoundError:
-        print(f"Error: Cookie file not found: {args.cookies_file}", file=sys.stderr)
-        print(file=sys.stderr)
-        print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
-        sys.exit(1)
+        if config.get("plus4u_email") and config.get("plus4u_password"):
+            print(
+                f"Cookie file not found: {args.cookies_file}; bootstrapping a new session via Plus4U login.",
+                file=sys.stderr,
+            )
+            cookies = {}
+        else:
+            print(f"Error: Cookie file not found: {args.cookies_file}", file=sys.stderr)
+            print(file=sys.stderr)
+            print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
+            sys.exit(1)
 
     # Load last_run timestamp
     last_run = None
