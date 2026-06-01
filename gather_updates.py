@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, date, timedelta
+from urllib.parse import urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -38,6 +39,26 @@ URL_PATTERNS = {
     "event": re.compile(r"/timetable/detail\?event=(\d+)"),
     "evaluation": re.compile(r"/evaluation/detail\?evaluationId=(\d+)"),
 }
+
+
+def _normalize_edookit_url(url):
+    """Return a mail-safe Edookit URL path.
+
+    Edookit sometimes emits relative paths without a leading slash.
+    """
+    if not url:
+        return url
+
+    url = url.replace("&amp;", "&").strip()
+    parts = urlsplit(url)
+    if parts.scheme or parts.netloc:
+        return url
+
+    path = parts.path or ""
+    if path and not path.startswith("/"):
+        path = "/" + path
+
+    return urlunsplit(("", "", path, parts.query, parts.fragment))
 
 
 def parse_inbox_timestamp(text):
@@ -110,7 +131,7 @@ def parse_inbox(html):
         url = None
         url_match = re.search(r'window\.location\.href="([^"]+)"', onclick)
         if url_match:
-            url = url_match.group(1).replace("&amp;", "&")
+            url = _normalize_edookit_url(url_match.group(1))
 
         # Title from .object-name
         name_el = div.find("div", class_="object-name")
@@ -176,7 +197,7 @@ def parse_action_items(html):
         if not link:
             continue
 
-        url = link.get("href", "")
+        url = _normalize_edookit_url(link.get("href", ""))
         name_div = link.find("div", class_="name")
         info_div = link.find("div", class_="additional-info")
         icon_div = link.find("div", class_="icon")
@@ -243,7 +264,7 @@ def parse_upcoming_events(html):
         url = None
         url_match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)', onclick)
         if url_match:
-            url = url_match.group(1)
+            url = _normalize_edookit_url(url_match.group(1))
 
         cols = row.find_all("li", recursive=False)
         if len(cols) < 3:
