@@ -553,19 +553,19 @@ def main():
         except ValueError:
             pass
 
-    # Ensure session is alive (triggers OIDC refresh or Plus4U login as needed)
-    if not is_dry:
-        try:
-            keepalive(cookies, args.cookies_file, config)
-            print("Session OK.", file=sys.stderr)
-        except AuthError as e:
-            print(f"Error: {e}", file=sys.stderr)
+    # Ensure session is alive before any authenticated fetch, including dry runs.
+    try:
+        keepalive(cookies, args.cookies_file, config)
+        print("Session OK.", file=sys.stderr)
+    except AuthError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if not is_dry:
             _send_alert_email(
                 "Edookit: authentication failed",
                 f"Edookit could not authenticate.\n\n{e}",
                 config,
             )
-            sys.exit(1)
+        sys.exit(1)
 
     # Fetch and parse inbox
     print("Fetching inbox...", file=sys.stderr)
