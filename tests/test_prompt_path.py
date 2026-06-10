@@ -9,7 +9,13 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from edookit import AuthError, build_translation_prompt
-from gather_updates import _item_timestamp_in_utc, filter_items_for_utc_date, parse_inbox_timestamp
+from gather_updates import (
+    PRAGUE_TZ,
+    _item_timestamp_in_utc,
+    filter_items_for_utc_date,
+    filter_new_items,
+    parse_inbox_timestamp,
+)
 
 
 class FixedPragueNow(datetime):
@@ -44,6 +50,34 @@ class PromptPathTests(unittest.TestCase):
 
         self.assertEqual(ts.tzinfo, ZoneInfo("Europe/Prague"))
         self.assertEqual(_item_timestamp_in_utc({"timestamp": ts}), datetime(2026, 6, 4, 21, 30, tzinfo=timezone.utc))
+
+    def test_parse_inbox_timestamp_returns_prague_aware_absolute_dates(self):
+        ts = parse_inbox_timestamp("4. 6. 2026, 23:30")
+
+        self.assertEqual(ts.tzinfo, PRAGUE_TZ)
+        self.assertEqual(ts, datetime(2026, 6, 4, 23, 30, tzinfo=PRAGUE_TZ))
+
+    def test_filter_new_items_handles_relative_and_absolute_timestamps(self):
+        with patch("gather_updates.datetime", FixedPragueNow):
+            items = [
+                {"title": "relative", "timestamp": parse_inbox_timestamp("Today, 23:30")},
+                {"title": "absolute", "timestamp": parse_inbox_timestamp("4. 6. 2026, 23:30")},
+            ]
+
+        last_run = datetime(2026, 6, 4, 22, 0, tzinfo=PRAGUE_TZ)
+
+        filtered = filter_new_items(items, last_run)
+
+        self.assertEqual([item["title"] for item in filtered], ["relative", "absolute"])
+
+    def test_filter_new_items_accepts_persisted_naive_last_run(self):
+        items = [
+            {"title": "new", "timestamp": datetime(2026, 6, 5, 12, 30, tzinfo=PRAGUE_TZ)},
+        ]
+
+        filtered = filter_new_items(items, datetime(2026, 6, 5, 11, 0))
+
+        self.assertEqual([item["title"] for item in filtered], ["new"])
 
     def test_prompt_for_date_skips_downloads_and_email_side_effects(self):
         item = {
