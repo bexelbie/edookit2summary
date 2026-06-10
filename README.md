@@ -91,16 +91,14 @@ configured model is tried in order, with 2-minute pauses between cycles.
 
 ### Optional Azure test lane
 
-If `EMAIL_TEST` is set, the run performs a second Azure-only translation pass after the normal email is sent. The test lane uses `AZURE_TEST_*` when present, otherwise it falls back to the corresponding `AZURE_OPENAI_*` values. The same summary and attachments are reused; only the model/config differs. The test lane is serial and never blocks the primary email path.
-
-Safe rule: if any `AZURE_TEST_*` variable is set, the test lane must use all four `AZURE_TEST_*` values. We intentionally do not mix test and primary Azure resource fields, because partial overrides can create an unsafe or incoherent Azure configuration.
+If `EMAIL_TEST` is set, the run performs a second Azure-only translation pass after the normal email is sent. The test lane uses `AZURE_TEST_*` when present, and each test setting falls back independently to the corresponding `AZURE_OPENAI_*` value. The same summary and attachments are reused; only the model/config differs. The test lane is serial and never blocks the primary email path.
 
 | Variable                   | Description |
 | -------------------------- | ----------- |
-| `AZURE_TEST_ENDPOINT`      | Azure test endpoint; set this only when providing the full `AZURE_TEST_*` set |
-| `AZURE_TEST_KEY`           | Azure test API key; set this only when providing the full `AZURE_TEST_*` set |
-| `AZURE_TEST_DEPLOYMENT`    | Azure test deployment; set this only when providing the full `AZURE_TEST_*` set |
-| `AZURE_TEST_API_VERSION`   | Azure test API version; set this only when providing the full `AZURE_TEST_*` set |
+| `AZURE_TEST_ENDPOINT`      | Azure test endpoint (falls back to `AZURE_OPENAI_ENDPOINT`) |
+| `AZURE_TEST_KEY`           | Azure test API key (falls back to `AZURE_OPENAI_KEY`) |
+| `AZURE_TEST_DEPLOYMENT`    | Azure test deployment (falls back to `AZURE_OPENAI_DEPLOYMENT`) |
+| `AZURE_TEST_API_VERSION`   | Azure test API version (falls back to `AZURE_OPENAI_API_VERSION`) |
 
 ## Usage
 
