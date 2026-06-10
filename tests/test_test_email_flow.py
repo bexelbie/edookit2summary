@@ -33,6 +33,25 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(test_config["gemini_api_key"], "")
         self.assertEqual(test_config["gemini_models"], "")
 
+    def test_build_test_config_allows_per_field_test_overrides(self):
+        config = {
+            "azure_openai_endpoint": "https://main.openai.azure.com",
+            "azure_openai_key": "main-key",
+            "azure_openai_deployment": "main-deploy",
+            "azure_openai_api_version": "2024-05-01-preview",
+            "azure_test_deployment": "test-deploy",
+            "azure_test_api_version": "2025-01-01-preview",
+            "email_to": "main@example.com",
+            "email_test": "test@example.com",
+        }
+
+        test_config = gather_updates.build_test_config(config)
+
+        self.assertEqual(test_config["azure_openai_endpoint"], "https://main.openai.azure.com")
+        self.assertEqual(test_config["azure_openai_key"], "main-key")
+        self.assertEqual(test_config["azure_openai_deployment"], "test-deploy")
+        self.assertEqual(test_config["azure_openai_api_version"], "2025-01-01-preview")
+
     def test_send_test_email_uses_test_recipient_and_azure_only_config(self):
         config = {
             "email_to": "main@example.com",
@@ -84,7 +103,7 @@ class TestEmailFlowTests(unittest.TestCase):
         translate_text.assert_not_called()
         send_email.assert_not_called()
 
-    def test_send_test_email_skips_partial_test_azure_overrides(self):
+    def test_send_test_email_uses_partial_test_azure_overrides_with_main_fallbacks(self):
         config = {
             "email_to": "main@example.com",
             "email_test": "test@example.com",
@@ -92,13 +111,13 @@ class TestEmailFlowTests(unittest.TestCase):
             "azure_openai_key": "primary-key",
             "azure_openai_deployment": "primary-deploy",
             "azure_openai_api_version": "2024-05-01-preview",
-            "azure_test_endpoint": "https://test.openai.azure.com",
-            "azure_test_key": "test-key",
             "azure_test_deployment": "test-deploy",
-            "azure_test_api_version": "",
+            "azure_test_api_version": "2025-01-01-preview",
+            "gemini_api_key": "gemini-key",
+            "gemini_models": "gemini-model",
         }
 
-        with patch("gather_updates.translate_text") as translate_text, \
+        with patch("gather_updates.translate_text", return_value="Test translated") as translate_text, \
                 patch("gather_updates.send_email") as send_email:
             result = gather_updates.send_test_email(
                 "Subject",
@@ -107,9 +126,14 @@ class TestEmailFlowTests(unittest.TestCase):
                 [],
             )
 
-        self.assertFalse(result)
-        translate_text.assert_not_called()
-        send_email.assert_not_called()
+        self.assertTrue(result)
+        translate_text.assert_called_once()
+        used_config = translate_text.call_args.args[1]
+        self.assertEqual(used_config["azure_openai_endpoint"], "https://primary.openai.azure.com")
+        self.assertEqual(used_config["azure_openai_key"], "primary-key")
+        self.assertEqual(used_config["azure_openai_deployment"], "test-deploy")
+        self.assertEqual(used_config["azure_openai_api_version"], "2025-01-01-preview")
+        send_email.assert_called_once()
 
     def test_main_persists_last_run_before_test_lane(self):
         item = {

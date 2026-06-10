@@ -565,43 +565,32 @@ def _send_alert_email(subject, body, config):
         print(f"Warning: alert email failed: {e}", file=sys.stderr)
 
 
-AZURE_TEST_CONFIG_KEYS = (
-    "azure_test_endpoint",
-    "azure_test_key",
-    "azure_test_deployment",
-    "azure_test_api_version",
-)
-
-
-def _has_test_azure_override(config):
-    """Return True when any AZURE_TEST_* override is explicitly set."""
-    return any(config.get(key) for key in AZURE_TEST_CONFIG_KEYS)
-
-
 def build_test_config(config):
     """Build the Azure-only config used for the optional test email lane.
 
-    Rule: if any AZURE_TEST_* override is set, the test lane must use only
-    AZURE_TEST_* values. We do not mix test and primary Azure resource fields.
+    Each AZURE_TEST_* value falls back independently to the matching
+    AZURE_OPENAI_* setting so test runs can override only the model details
+    they need.
     """
     test_config = dict(config)
-    if _has_test_azure_override(config):
-        endpoint = config.get("azure_test_endpoint", "")
-        key = config.get("azure_test_key", "")
-        deployment = config.get("azure_test_deployment", "")
-        api_version = config.get("azure_test_api_version", "")
-    else:
-        endpoint = config.get("azure_openai_endpoint", "")
-        key = config.get("azure_openai_key", "")
-        deployment = config.get("azure_openai_deployment", "")
-        api_version = config.get("azure_openai_api_version", "")
-
     test_config.update({
         "email_to": config.get("email_test") or config.get("email_to"),
-        "azure_openai_endpoint": endpoint,
-        "azure_openai_key": key,
-        "azure_openai_deployment": deployment,
-        "azure_openai_api_version": api_version,
+        "azure_openai_endpoint": (
+            config.get("azure_test_endpoint")
+            or config.get("azure_openai_endpoint")
+        ),
+        "azure_openai_key": (
+            config.get("azure_test_key")
+            or config.get("azure_openai_key")
+        ),
+        "azure_openai_deployment": (
+            config.get("azure_test_deployment")
+            or config.get("azure_openai_deployment")
+        ),
+        "azure_openai_api_version": (
+            config.get("azure_test_api_version")
+            or config.get("azure_openai_api_version")
+        ),
     })
     test_config["gemini_api_key"] = ""
     test_config["gemini_models"] = ""
@@ -609,17 +598,14 @@ def build_test_config(config):
 
 
 def _has_complete_test_azure_config(config):
-    """Return True when the effective Azure test config is coherent and usable."""
-    if _has_test_azure_override(config):
-        required_fields = AZURE_TEST_CONFIG_KEYS
-        return all(config.get(field) for field in required_fields)
-
+    """Return True when the effective Azure test config is usable."""
+    test_config = build_test_config(config)
     required_fields = (
         "azure_openai_endpoint",
         "azure_openai_key",
         "azure_openai_api_version",
     )
-    return all(config.get(field) for field in required_fields)
+    return all(test_config.get(field) for field in required_fields)
 
 
 def send_test_email(subject, summary_markdown, config, downloaded_files):
@@ -630,28 +616,19 @@ def send_test_email(subject, summary_markdown, config, downloaded_files):
 
     test_config = build_test_config(config)
     if not _has_complete_test_azure_config(config):
-        if _has_test_azure_override(config):
-            missing = [field for field in AZURE_TEST_CONFIG_KEYS if not config.get(field)]
-            print(
-                "Warning: AZURE_TEST_* overrides are incomplete; skipping test email. "
-                f"Missing test config: {', '.join(missing)}. "
-                "Set all AZURE_TEST_* values or leave them unset to avoid mixed-resource configs.",
-                file=sys.stderr,
+        missing = [
+            field for field in (
+                "azure_openai_endpoint",
+                "azure_openai_key",
+                "azure_openai_api_version",
             )
-        else:
-            missing = [
-                field for field in (
-                    "azure_openai_endpoint",
-                    "azure_openai_key",
-                    "azure_openai_api_version",
-                )
-                if not config.get(field)
-            ]
-            print(
-                "Warning: primary Azure config is incomplete; skipping test email. "
-                f"Missing config: {', '.join(missing)}.",
-                file=sys.stderr,
-            )
+            if not test_config.get(field)
+        ]
+        print(
+            "Warning: effective Azure test config is incomplete; skipping test email. "
+            f"Missing config: {', '.join(missing)}.",
+            file=sys.stderr,
+        )
         return False
 
     try:
