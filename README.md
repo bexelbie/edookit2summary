@@ -99,13 +99,21 @@ export $(cat edookit2summary.env | xargs)
 
 # Preview rendered HTML
 .venv/bin/python3 gather_updates.py --dry-run-html
-
+ 
+# Build the exact translation prompt payload for a UTC day without calling LLM
+.venv/bin/python3 gather_updates.py --prompt-for-date 2026-06-04
+ 
 # Run for real (sends email, updates last_run)
 .venv/bin/python3 gather_updates.py
 ```
 
 The cookies file defaults to `cookies.json` in the current directory. Pass a
 different path as a positional argument if needed.
+
+`--prompt-for-date YYYY-MM-DD` uses the same summary-generation path as the
+normal update flow, but stops before any translation attempt. It prints JSON
+with `utc_date`, `summary_markdown`, `system_prompt`, and `user_prompt` and
+never sends email or updates `last_run`.
 
 ### fetch_assignment.py
 

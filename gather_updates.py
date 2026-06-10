@@ -5,7 +5,10 @@ import json
 import re
 import sys
 import tempfile
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 from bs4 import BeautifulSoup
 
@@ -14,7 +17,7 @@ from edookit import (
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     parse_event_date,
     check_llm_config, translate_text, download_attachment, send_email,
-    load_config, render_email_html, keepalive,
+    load_config, render_email_html, keepalive, build_translation_prompt,
 )
 
 
@@ -44,19 +47,16 @@ def parse_inbox_timestamp(text):
     """Parse an edookit timestamp like '15. 4. 2026, 12:22' into a datetime.
 
     Edookit uses thin spaces (\\u2009 or &thinsp;) between date parts.
+    Relative labels are resolved in Prague time for deterministic UTC filtering.
     """
     # Normalize whitespace: thin spaces, non-breaking spaces, etc.
     text = re.sub(r"[\u2009\u00a0\u202f]+", " ", text.strip())
-    # Handle "Today" and "Yesterday" — we can't resolve these to absolute
-    # dates without knowing the server's timezone, so we treat them as
-    # very recent (today's date as fallback)
     if "Today" in text or "Yesterday" in text:
-        now = datetime.now()
+        now = datetime.now(PRAGUE_TZ)
         time_match = re.search(r"(\d{1,2}):(\d{2})", text)
         if time_match:
             h, m = int(time_match.group(1)), int(time_match.group(2))
             if "Yesterday" in text:
-                from datetime import timedelta
                 now = now - timedelta(days=1)
             return now.replace(hour=h, minute=m, second=0, microsecond=0)
         return now
@@ -158,6 +158,29 @@ def filter_new_items(items, last_run):
     if last_run is None:
         return items
     return [i for i in items if i["timestamp"] and i["timestamp"] > last_run]
+
+
+def _item_timestamp_in_utc(item):
+    """Convert an inbox timestamp to UTC for deterministic date filtering."""
+    ts = item.get("timestamp")
+    if not ts:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=PRAGUE_TZ)
+    return ts.astimezone(timezone.utc)
+
+
+def filter_items_for_utc_date(items, utc_date):
+    """Return only items whose timestamp falls on the supplied UTC calendar day."""
+    if not isinstance(utc_date, date):
+        utc_date = date.fromisoformat(str(utc_date))
+
+    start = datetime.combine(utc_date, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return [
+        item for item in items
+        if item.get("timestamp") and start <= _item_timestamp_in_utc(item) < end
+    ]
 
 
 def parse_action_items(html):
@@ -524,7 +547,7 @@ def _send_alert_email(subject, body, config):
         print(f"Warning: alert email failed: {e}", file=sys.stderr)
 
 
-def main():
+def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="Gather edookit updates")
     parser.add_argument("cookies_file", nargs="?", default="cookies.json")
@@ -532,8 +555,15 @@ def main():
                         help="Print markdown to stdout, skip email and last_run update")
     parser.add_argument("--dry-run-html", action="store_true",
                         help="Print rendered HTML to stdout, skip email and last_run update")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--prompt-for-date",
+        metavar="YYYY-MM-DD",
+        help="Build the exact translation prompt for a UTC calendar day without calling the model",
+    )
+    args = parser.parse_args(argv)
     is_dry = args.dry_run or args.dry_run_html
+    skip_email_and_last_run = is_dry or args.prompt_for_date is not None
+    should_send_email = not skip_email_and_last_run
     config = load_config()
 
     try:
@@ -560,11 +590,12 @@ def main():
             print("Session OK.", file=sys.stderr)
         except AuthError as e:
             print(f"Error: {e}", file=sys.stderr)
-            _send_alert_email(
-                "Edookit: authentication failed",
-                f"Edookit could not authenticate.\n\n{e}",
-                config,
-            )
+            if should_send_email:
+                _send_alert_email(
+                    "Edookit: authentication failed",
+                    f"Edookit could not authenticate.\n\n{e}",
+                    config,
+                )
             sys.exit(1)
 
     # Fetch and parse inbox
@@ -574,7 +605,7 @@ def main():
         all_items = parse_inbox(inbox_html)
     except AuthError as e:
         print(f"Error: {e}", file=sys.stderr)
-        if not is_dry:
+        if should_send_email:
             _send_alert_email(
                 "Edookit: authentication failed",
                 f"Edookit lost authentication during inbox fetch.\n\n{e}",
@@ -582,7 +613,15 @@ def main():
             )
         sys.exit(1)
 
-    new_items = filter_new_items(all_items, last_run)
+    if args.prompt_for_date is not None:
+        try:
+            target_date = date.fromisoformat(args.prompt_for_date)
+        except ValueError:
+            print("Error: --prompt-for-date must be in YYYY-MM-DD format.", file=sys.stderr)
+            sys.exit(1)
+        new_items = filter_items_for_utc_date(all_items, target_date)
+    else:
+        new_items = filter_new_items(all_items, last_run)
 
     max_updates = int(config.get("max_updates", 50))
     if len(new_items) > max_updates:
@@ -590,6 +629,17 @@ def main():
         new_items = new_items[:max_updates]
 
     if not new_items:
+        if args.prompt_for_date is not None:
+            output = "No new updates.\n"
+            prompts = build_translation_prompt(output, config)
+            print(json.dumps({
+                "utc_date": args.prompt_for_date,
+                "summary_markdown": output,
+                "system_prompt": prompts["system_prompt"],
+                "user_prompt": prompts["user_prompt"],
+            }, ensure_ascii=False, indent=2))
+            sys.exit(0)
+
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
@@ -597,7 +647,7 @@ def main():
             print("Translation model OK.", file=sys.stderr)
         except TranslationError as e:
             print(f"Warning: {e}", file=sys.stderr)
-            if not is_dry:
+            if should_send_email:
                 _send_alert_email(
                     "Edookit: translation model unavailable",
                     f"The LLM model check failed:\n\n{e}\n\n"
@@ -658,25 +708,37 @@ def main():
             if detail:
                 details_by_url[item["url"]] = detail
 
-    # Download attachments to a temp directory
+    # Download attachments only when email delivery is enabled; prompt-only mode
+    # only needs the attachment names already present in the detail parse.
     downloaded_files = []
     with tempfile.TemporaryDirectory(prefix="edookit_") as tmp_dir:
-        for detail in details_by_url.values():
-            for att in detail.get("attachments", []):
-                try:
-                    print(f"  Downloading: {att['name']}", file=sys.stderr)
-                    filepath, filename = download_attachment(
-                        att["download_url"], cookies, tmp_dir
-                    )
-                    downloaded_files.append(filepath)
-                except RuntimeError as e:
-                    print(f"  Warning: {e}", file=sys.stderr)
+        if should_send_email:
+            for detail in details_by_url.values():
+                for att in detail.get("attachments", []):
+                    try:
+                        print(f"  Downloading: {att['name']}", file=sys.stderr)
+                        filepath, _ = download_attachment(
+                            att["download_url"], cookies, tmp_dir
+                        )
+                        downloaded_files.append(filepath)
+                    except RuntimeError as e:
+                        print(f"  Warning: {e}", file=sys.stderr)
 
         # Generate summary
         output = format_summary(
             items_by_type, details_by_url, action_items,
             upcoming_events=upcoming_events, new_event_urls=new_event_urls,
         )
+
+        if args.prompt_for_date is not None:
+            prompts = build_translation_prompt(output, config)
+            print(json.dumps({
+                "utc_date": args.prompt_for_date,
+                "summary_markdown": output,
+                "system_prompt": prompts["system_prompt"],
+                "user_prompt": prompts["user_prompt"],
+            }, ensure_ascii=False, indent=2))
+            sys.exit(0)
 
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
@@ -696,7 +758,7 @@ def main():
 
         # Send email unless dry-run
         email_failed = False
-        if not is_dry and config.get("smtp_host"):
+        if should_send_email and config.get("smtp_host"):
             subject = f"Edookit: {len(new_items)} new update(s)"
             try:
                 print("Sending email...", file=sys.stderr)
@@ -709,7 +771,7 @@ def main():
 
     # Update last_run unless dry-run (update even on failures — data was sent
     # to stdout so it's not lost, and we don't want to re-process next run)
-    if not is_dry:
+    if not skip_email_and_last_run:
         newest = max(
             (i["timestamp"] for i in new_items if i["timestamp"]),
             default=datetime.now(),

@@ -848,17 +848,12 @@ def check_llm_config(config):
     _llm_chat(config, system_prompt="", user_text="Say OK", max_tokens=3)
 
 
-def translate_text(text, config):
-    """Translate Czech text to the target language using the configured LLM.
-
-    Preserves markdown formatting. Returns the translated text, or the
-    original text with a warning if translation fails.
-    """
+def build_translation_prompt(text, config):
+    """Build the exact system/user prompt pair for translation."""
     if not text or not text.strip():
-        return text
+        return {"system_prompt": "", "user_prompt": text}
 
     target_lang = config.get("target_language", "English")
-
     system_prompt = (
         f"You translate Czech school notifications to {target_lang}. "
         "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
@@ -885,9 +880,26 @@ def translate_text(text, config):
         "- Translate subject names in titles (e.g., 'Čj - I.B' → 'Czech - I.B')\n"
         "- Output only the translated text, no commentary"
     )
+    return {"system_prompt": system_prompt, "user_prompt": text}
+
+
+def translate_text(text, config):
+    """Translate Czech text to the target language using the configured LLM.
+
+    Preserves markdown formatting. Returns the translated text, or the
+    original text with a warning if translation fails.
+    """
+    if not text or not text.strip():
+        return text
+
+    prompts = build_translation_prompt(text, config)
 
     try:
-        return _llm_chat(config, system_prompt=system_prompt, user_text=text)
+        return _llm_chat(
+            config,
+            system_prompt=prompts["system_prompt"],
+            user_text=prompts["user_prompt"],
+        )
     except TranslationError as e:
         # Don't fail the whole run if translation breaks — return original
         # with a note
