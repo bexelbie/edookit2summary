@@ -43,6 +43,20 @@ URL_PATTERNS = {
 }
 
 
+def _normalize_timestamp(ts):
+    """Return a Prague-aware datetime for comparisons and persistence."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=PRAGUE_TZ)
+    return ts.astimezone(PRAGUE_TZ)
+
+
+def _now_in_prague():
+    """Return the current time with Prague tzinfo for consistent comparisons."""
+    return datetime.now(PRAGUE_TZ)
+
+
 def parse_inbox_timestamp(text):
     """Parse an edookit timestamp like '15. 4. 2026, 12:22' into a datetime.
 
@@ -72,7 +86,7 @@ def parse_inbox_timestamp(text):
 
     for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
         try:
-            return datetime.strptime(text, fmt)
+            return _normalize_timestamp(datetime.strptime(text, fmt))
         except ValueError:
             continue
 
@@ -157,7 +171,11 @@ def filter_new_items(items, last_run):
     """Return only items newer than last_run datetime."""
     if last_run is None:
         return items
-    return [i for i in items if i["timestamp"] and i["timestamp"] > last_run]
+    last_run = _normalize_timestamp(last_run)
+    return [
+        i for i in items
+        if i.get("timestamp") and _normalize_timestamp(i["timestamp"]) > last_run
+    ]
 
 
 def _item_timestamp_in_utc(item):
@@ -547,6 +565,107 @@ def _send_alert_email(subject, body, config):
         print(f"Warning: alert email failed: {e}", file=sys.stderr)
 
 
+AZURE_TEST_CONFIG_KEYS = (
+    "azure_test_endpoint",
+    "azure_test_key",
+    "azure_test_deployment",
+    "azure_test_api_version",
+)
+
+
+def _has_test_azure_override(config):
+    """Return True when any AZURE_TEST_* override is explicitly set."""
+    return any(config.get(key) for key in AZURE_TEST_CONFIG_KEYS)
+
+
+def build_test_config(config):
+    """Build the Azure-only config used for the optional test email lane.
+
+    Rule: if any AZURE_TEST_* override is set, the test lane must use only
+    AZURE_TEST_* values. We do not mix test and primary Azure resource fields.
+    """
+    test_config = dict(config)
+    if _has_test_azure_override(config):
+        endpoint = config.get("azure_test_endpoint", "")
+        key = config.get("azure_test_key", "")
+        deployment = config.get("azure_test_deployment", "")
+        api_version = config.get("azure_test_api_version", "")
+    else:
+        endpoint = config.get("azure_openai_endpoint", "")
+        key = config.get("azure_openai_key", "")
+        deployment = config.get("azure_openai_deployment", "")
+        api_version = config.get("azure_openai_api_version", "")
+
+    test_config.update({
+        "email_to": config.get("email_test") or config.get("email_to"),
+        "azure_openai_endpoint": endpoint,
+        "azure_openai_key": key,
+        "azure_openai_deployment": deployment,
+        "azure_openai_api_version": api_version,
+    })
+    test_config["gemini_api_key"] = ""
+    test_config["gemini_models"] = ""
+    return test_config
+
+
+def _has_complete_test_azure_config(config):
+    """Return True when the effective Azure test config is coherent and usable."""
+    if _has_test_azure_override(config):
+        required_fields = AZURE_TEST_CONFIG_KEYS
+        return all(config.get(field) for field in required_fields)
+
+    required_fields = (
+        "azure_openai_endpoint",
+        "azure_openai_key",
+        "azure_openai_api_version",
+    )
+    return all(config.get(field) for field in required_fields)
+
+
+def send_test_email(subject, summary_markdown, config, downloaded_files):
+    """Send the optional Azure-only test email using the same attachments."""
+    test_recipient = config.get("email_test") or config.get("email_to")
+    if not test_recipient:
+        return False
+
+    test_config = build_test_config(config)
+    if not _has_complete_test_azure_config(config):
+        if _has_test_azure_override(config):
+            missing = [field for field in AZURE_TEST_CONFIG_KEYS if not config.get(field)]
+            print(
+                "Warning: AZURE_TEST_* overrides are incomplete; skipping test email. "
+                f"Missing test config: {', '.join(missing)}. "
+                "Set all AZURE_TEST_* values or leave them unset to avoid mixed-resource configs.",
+                file=sys.stderr,
+            )
+        else:
+            missing = [
+                field for field in (
+                    "azure_openai_endpoint",
+                    "azure_openai_key",
+                    "azure_openai_api_version",
+                )
+                if not config.get(field)
+            ]
+            print(
+                "Warning: primary Azure config is incomplete; skipping test email. "
+                f"Missing config: {', '.join(missing)}.",
+                file=sys.stderr,
+            )
+        return False
+
+    try:
+        translated = translate_text(summary_markdown, test_config)
+        if translated.startswith("[Translation failed:"):
+            print("Warning: test-model translation failed, sending fallback Czech text.", file=sys.stderr)
+        send_email(subject, translated, test_config, downloaded_files, to_addr=test_recipient)
+        print("Test email sent.", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"Warning: test email failed: {e}", file=sys.stderr)
+        return False
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="Gather edookit updates")
@@ -579,7 +698,7 @@ def main(argv=None):
     last_run_str = cookies.get("last_run")
     if last_run_str:
         try:
-            last_run = datetime.fromisoformat(last_run_str)
+            last_run = _normalize_timestamp(datetime.fromisoformat(last_run_str))
         except ValueError:
             pass
 
@@ -656,7 +775,7 @@ def main(argv=None):
                     config,
                 )
         if not is_dry:
-            cookies["last_run"] = datetime.now().isoformat(timespec="seconds")
+            cookies["last_run"] = _now_in_prague().isoformat(timespec="seconds")
             save_cookies(cookies, args.cookies_file)
         sys.exit(0)
 
@@ -711,6 +830,7 @@ def main(argv=None):
     # Download attachments only when email delivery is enabled; prompt-only mode
     # only needs the attachment names already present in the detail parse.
     downloaded_files = []
+    last_run_saved = False
     with tempfile.TemporaryDirectory(prefix="edookit_") as tmp_dir:
         if should_send_email:
             for detail in details_by_url.values():
@@ -740,11 +860,13 @@ def main(argv=None):
             }, ensure_ascii=False, indent=2))
             sys.exit(0)
 
+        summary_markdown = output
+
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
         target_lang = config.get("target_language", "English")
         print(f"Translating to {target_lang}...", file=sys.stderr)
-        translated = translate_text(output, config)
+        translated = translate_text(summary_markdown, config)
         if translated.startswith("[Translation failed:"):
             print("Warning: translation failed, using Czech.", file=sys.stderr)
             translation_failed = True
@@ -767,14 +889,28 @@ def main(argv=None):
             except Exception as e:
                 print(f"Error: email failed: {e}", file=sys.stderr)
                 email_failed = True
+
+            if not email_failed:
+                newest = max(
+                    (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
+                    default=_now_in_prague(),
+                )
+                cookies["last_run"] = newest.isoformat(timespec="seconds")
+                save_cookies(cookies, args.cookies_file)
+                print(f"Updated last_run to {cookies['last_run']}", file=sys.stderr)
+                last_run_saved = True
+
+            if not email_failed and config.get("email_test"):
+                print("Sending test email...", file=sys.stderr)
+                send_test_email(subject, summary_markdown, config, downloaded_files)
         # Temp dir and files are cleaned up here
 
     # Update last_run unless dry-run (update even on failures — data was sent
     # to stdout so it's not lost, and we don't want to re-process next run)
-    if not skip_email_and_last_run:
+    if not skip_email_and_last_run and not last_run_saved:
         newest = max(
-            (i["timestamp"] for i in new_items if i["timestamp"]),
-            default=datetime.now(),
+            (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
+            default=_now_in_prague(),
         )
         cookies["last_run"] = newest.isoformat(timespec="seconds")
         save_cookies(cookies, args.cookies_file)

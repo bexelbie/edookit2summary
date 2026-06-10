@@ -82,6 +82,11 @@ _ENV_MAP = {
     "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "email_test":               "EMAIL_TEST",
+    "azure_test_endpoint":      "AZURE_TEST_ENDPOINT",
+    "azure_test_key":           "AZURE_TEST_KEY",
+    "azure_test_deployment":    "AZURE_TEST_DEPLOYMENT",
+    "azure_test_api_version":   "AZURE_TEST_API_VERSION",
     "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
     "plus4u_email":             "PLUS4U_EMAIL",
@@ -961,7 +966,7 @@ def render_email_html(markdown_body):
     return _EMAIL_HTML_TEMPLATE % styled
 
 
-def send_email(subject, markdown_body, config, attachment_paths=None):
+def send_email(subject, markdown_body, config, attachment_paths=None, to_addr=None):
     """Send an email with markdown body rendered to HTML, plus optional attachments.
 
     Sends a multipart message with both plain text and HTML parts.
@@ -975,7 +980,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
         )
 
     from_addr = config["email_from"]
-    to_addr = config["email_to"]
+    to_addr = to_addr or config["email_to"]
 
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
