@@ -86,7 +86,19 @@ configured model is tried in order, with 2-minute pauses between cycles.
 | `SMTP_USER`  | SMTP username                                     |
 | `SMTP_PASS`  | SMTP password                                     |
 | `EMAIL_FROM` | Sender address                                    |
-| `EMAIL_TO`   | Recipient address (supports comma-separated list) |
+| `EMAIL_TO`   | Primary recipient address (supports comma-separated list) |
+| `EMAIL_TEST` | Optional second-recipient address for the Azure test lane |
+
+### Optional Azure test lane
+
+If `EMAIL_TEST` is set, the run performs a second Azure-only translation pass after the normal email is sent. The test lane uses `AZURE_TEST_*` when present, and each test setting falls back independently to the corresponding `AZURE_OPENAI_*` value. The same summary and attachments are reused; only the model/config differs. The test lane is serial and never blocks the primary email path.
+
+| Variable                   | Description |
+| -------------------------- | ----------- |
+| `AZURE_TEST_ENDPOINT`      | Azure test endpoint (falls back to `AZURE_OPENAI_ENDPOINT`) |
+| `AZURE_TEST_KEY`           | Azure test API key (falls back to `AZURE_OPENAI_KEY`) |
+| `AZURE_TEST_DEPLOYMENT`    | Azure test deployment (falls back to `AZURE_OPENAI_DEPLOYMENT`) |
+| `AZURE_TEST_API_VERSION`   | Azure test API version (falls back to `AZURE_OPENAI_API_VERSION`) |
 
 ## Usage
 
@@ -99,13 +111,21 @@ export $(cat edookit2summary.env | xargs)
 
 # Preview rendered HTML
 .venv/bin/python3 gather_updates.py --dry-run-html
-
+ 
+# Build the exact translation prompt payload for a UTC day without calling LLM
+.venv/bin/python3 gather_updates.py --prompt-for-date 2026-06-04
+ 
 # Run for real (sends email, updates last_run)
 .venv/bin/python3 gather_updates.py
 ```
 
 The cookies file defaults to `cookies.json` in the current directory. Pass a
 different path as a positional argument if needed.
+
+`--prompt-for-date YYYY-MM-DD` uses the same summary-generation path as the
+normal update flow, but stops before any translation attempt. It prints JSON
+with `utc_date`, `summary_markdown`, `system_prompt`, and `user_prompt` and
+never sends email or updates `last_run`.
 
 ### fetch_assignment.py
 

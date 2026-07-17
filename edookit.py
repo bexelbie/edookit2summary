@@ -83,6 +83,11 @@ _ENV_MAP = {
     "smtp_pass":                "SMTP_PASS",
     "email_from":               "EMAIL_FROM",
     "email_to":                 "EMAIL_TO",
+    "email_test":               "EMAIL_TEST",
+    "azure_test_endpoint":      "AZURE_TEST_ENDPOINT",
+    "azure_test_key":           "AZURE_TEST_KEY",
+    "azure_test_deployment":    "AZURE_TEST_DEPLOYMENT",
+    "azure_test_api_version":   "AZURE_TEST_API_VERSION",
     "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
     "plus4u_email":             "PLUS4U_EMAIL",
@@ -849,17 +854,12 @@ def check_llm_config(config):
     _llm_chat(config, system_prompt="", user_text="Say OK", max_tokens=3)
 
 
-def translate_text(text, config):
-    """Translate Czech text to the target language using the configured LLM.
-
-    Preserves markdown formatting. Returns the translated text, or the
-    original text with a warning if translation fails.
-    """
+def build_translation_prompt(text, config):
+    """Build the exact system/user prompt pair for translation."""
     if not text or not text.strip():
-        return text
+        return {"system_prompt": "", "user_prompt": text}
 
     target_lang = config.get("target_language", "English")
-
     system_prompt = (
         f"You translate Czech school notifications to {target_lang}. "
         "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
@@ -886,9 +886,26 @@ def translate_text(text, config):
         "- Translate subject names in titles (e.g., 'Čj - I.B' → 'Czech - I.B')\n"
         "- Output only the translated text, no commentary"
     )
+    return {"system_prompt": system_prompt, "user_prompt": text}
+
+
+def translate_text(text, config):
+    """Translate Czech text to the target language using the configured LLM.
+
+    Preserves markdown formatting. Returns the translated text, or the
+    original text with a warning if translation fails.
+    """
+    if not text or not text.strip():
+        return text
+
+    prompts = build_translation_prompt(text, config)
 
     try:
-        return _llm_chat(config, system_prompt=system_prompt, user_text=text)
+        return _llm_chat(
+            config,
+            system_prompt=prompts["system_prompt"],
+            user_text=prompts["user_prompt"],
+        )
     except TranslationError as e:
         # Don't fail the whole run if translation breaks — return original
         # with a note
@@ -950,7 +967,7 @@ def render_email_html(markdown_body):
     return _EMAIL_HTML_TEMPLATE % styled
 
 
-def send_email(subject, markdown_body, config, attachment_paths=None):
+def send_email(subject, markdown_body, config, attachment_paths=None, to_addr=None):
     """Send an email with markdown body rendered to HTML, plus optional attachments.
 
     Sends a multipart message with both plain text and HTML parts.
@@ -964,7 +981,7 @@ def send_email(subject, markdown_body, config, attachment_paths=None):
         )
 
     from_addr = config["email_from"]
-    to_addr = config["email_to"]
+    to_addr = to_addr or config["email_to"]
 
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject

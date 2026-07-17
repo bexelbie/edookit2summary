@@ -7,6 +7,10 @@ import sys
 import tempfile
 from datetime import datetime, date, timedelta
 from urllib.parse import urlsplit, urlunsplit
+from datetime import datetime, date, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 from bs4 import BeautifulSoup
 
@@ -15,7 +19,7 @@ from edookit import (
     load_cookies, save_cookies, fetch_page, check_auth, parse_detail_page,
     parse_event_date,
     check_llm_config, translate_text, download_attachment, send_email,
-    load_config, render_email_html, keepalive,
+    load_config, render_email_html, keepalive, build_translation_prompt,
 )
 
 
@@ -61,23 +65,34 @@ def _normalize_edookit_url(url):
     return urlunsplit(("", "", path, parts.query, parts.fragment))
 
 
+def _normalize_timestamp(ts):
+    """Return a Prague-aware datetime for comparisons and persistence."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=PRAGUE_TZ)
+    return ts.astimezone(PRAGUE_TZ)
+
+
+def _now_in_prague():
+    """Return the current time with Prague tzinfo for consistent comparisons."""
+    return datetime.now(PRAGUE_TZ)
+
+
 def parse_inbox_timestamp(text):
     """Parse an edookit timestamp like '15. 4. 2026, 12:22' into a datetime.
 
     Edookit uses thin spaces (\\u2009 or &thinsp;) between date parts.
+    Relative labels are resolved in Prague time for deterministic UTC filtering.
     """
     # Normalize whitespace: thin spaces, non-breaking spaces, etc.
     text = re.sub(r"[\u2009\u00a0\u202f]+", " ", text.strip())
-    # Handle "Today" and "Yesterday" — we can't resolve these to absolute
-    # dates without knowing the server's timezone, so we treat them as
-    # very recent (today's date as fallback)
     if "Today" in text or "Yesterday" in text:
-        now = datetime.now()
+        now = datetime.now(PRAGUE_TZ)
         time_match = re.search(r"(\d{1,2}):(\d{2})", text)
         if time_match:
             h, m = int(time_match.group(1)), int(time_match.group(2))
             if "Yesterday" in text:
-                from datetime import timedelta
                 now = now - timedelta(days=1)
             return now.replace(hour=h, minute=m, second=0, microsecond=0)
         return now
@@ -93,7 +108,7 @@ def parse_inbox_timestamp(text):
 
     for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
         try:
-            return datetime.strptime(text, fmt)
+            return _normalize_timestamp(datetime.strptime(text, fmt))
         except ValueError:
             continue
 
@@ -178,7 +193,34 @@ def filter_new_items(items, last_run):
     """Return only items newer than last_run datetime."""
     if last_run is None:
         return items
-    return [i for i in items if i["timestamp"] and i["timestamp"] > last_run]
+    last_run = _normalize_timestamp(last_run)
+    return [
+        i for i in items
+        if i.get("timestamp") and _normalize_timestamp(i["timestamp"]) > last_run
+    ]
+
+
+def _item_timestamp_in_utc(item):
+    """Convert an inbox timestamp to UTC for deterministic date filtering."""
+    ts = item.get("timestamp")
+    if not ts:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=PRAGUE_TZ)
+    return ts.astimezone(timezone.utc)
+
+
+def filter_items_for_utc_date(items, utc_date):
+    """Return only items whose timestamp falls on the supplied UTC calendar day."""
+    if not isinstance(utc_date, date):
+        utc_date = date.fromisoformat(str(utc_date))
+
+    start = datetime.combine(utc_date, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return [
+        item for item in items
+        if item.get("timestamp") and start <= _item_timestamp_in_utc(item) < end
+    ]
 
 
 def parse_action_items(html):
@@ -545,7 +587,85 @@ def _send_alert_email(subject, body, config):
         print(f"Warning: alert email failed: {e}", file=sys.stderr)
 
 
-def main():
+def build_test_config(config):
+    """Build the Azure-only config used for the optional test email lane.
+
+    Each AZURE_TEST_* value falls back independently to the matching
+    AZURE_OPENAI_* setting so test runs can override only the model details
+    they need.
+    """
+    test_config = dict(config)
+    test_config.update({
+        "email_to": config.get("email_test") or config.get("email_to"),
+        "azure_openai_endpoint": (
+            config.get("azure_test_endpoint")
+            or config.get("azure_openai_endpoint")
+        ),
+        "azure_openai_key": (
+            config.get("azure_test_key")
+            or config.get("azure_openai_key")
+        ),
+        "azure_openai_deployment": (
+            config.get("azure_test_deployment")
+            or config.get("azure_openai_deployment")
+        ),
+        "azure_openai_api_version": (
+            config.get("azure_test_api_version")
+            or config.get("azure_openai_api_version")
+        ),
+    })
+    test_config["gemini_api_key"] = ""
+    test_config["gemini_models"] = ""
+    return test_config
+
+
+def _has_complete_test_azure_config(config):
+    """Return True when the effective Azure test config is usable."""
+    test_config = build_test_config(config)
+    required_fields = (
+        "azure_openai_endpoint",
+        "azure_openai_key",
+        "azure_openai_api_version",
+    )
+    return all(test_config.get(field) for field in required_fields)
+
+
+def send_test_email(subject, summary_markdown, config, downloaded_files):
+    """Send the optional Azure-only test email using the same attachments."""
+    test_recipient = config.get("email_test") or config.get("email_to")
+    if not test_recipient:
+        return False
+
+    test_config = build_test_config(config)
+    if not _has_complete_test_azure_config(config):
+        missing = [
+            field for field in (
+                "azure_openai_endpoint",
+                "azure_openai_key",
+                "azure_openai_api_version",
+            )
+            if not test_config.get(field)
+        ]
+        print(
+            "Warning: effective Azure test config is incomplete; skipping test email. "
+            f"Missing config: {', '.join(missing)}.",
+            file=sys.stderr,
+        )
+        return False
+
+    try:
+        translated = translate_text(summary_markdown, test_config)
+        if translated.startswith("[Translation failed:"):
+            print("Warning: test-model translation failed, sending fallback Czech text.", file=sys.stderr)
+        send_email(subject, translated, test_config, downloaded_files, to_addr=test_recipient)
+        print("Test email sent.", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"Warning: test email failed: {e}", file=sys.stderr)
+        return False
+
+
+def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="Gather edookit updates")
     parser.add_argument("cookies_file", nargs="?", default="cookies.json")
@@ -553,8 +673,15 @@ def main():
                         help="Print markdown to stdout, skip email and last_run update")
     parser.add_argument("--dry-run-html", action="store_true",
                         help="Print rendered HTML to stdout, skip email and last_run update")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--prompt-for-date",
+        metavar="YYYY-MM-DD",
+        help="Build the exact translation prompt for a UTC calendar day without calling the model",
+    )
+    args = parser.parse_args(argv)
     is_dry = args.dry_run or args.dry_run_html
+    skip_email_and_last_run = is_dry or args.prompt_for_date is not None
+    should_send_email = not skip_email_and_last_run
     config = load_config()
 
     try:
@@ -577,7 +704,7 @@ def main():
     last_run_str = cookies.get("last_run")
     if last_run_str:
         try:
-            last_run = datetime.fromisoformat(last_run_str)
+            last_run = _normalize_timestamp(datetime.fromisoformat(last_run_str))
         except ValueError:
             pass
 
@@ -587,7 +714,7 @@ def main():
         print("Session OK.", file=sys.stderr)
     except AuthError as e:
         print(f"Error: {e}", file=sys.stderr)
-        if not is_dry:
+        if should_send_email:
             _send_alert_email(
                 "Edookit: authentication failed",
                 f"Edookit could not authenticate.\n\n{e}",
@@ -602,7 +729,7 @@ def main():
         all_items = parse_inbox(inbox_html)
     except AuthError as e:
         print(f"Error: {e}", file=sys.stderr)
-        if not is_dry:
+        if should_send_email:
             _send_alert_email(
                 "Edookit: authentication failed",
                 f"Edookit lost authentication during inbox fetch.\n\n{e}",
@@ -610,7 +737,15 @@ def main():
             )
         sys.exit(1)
 
-    new_items = filter_new_items(all_items, last_run)
+    if args.prompt_for_date is not None:
+        try:
+            target_date = date.fromisoformat(args.prompt_for_date)
+        except ValueError:
+            print("Error: --prompt-for-date must be in YYYY-MM-DD format.", file=sys.stderr)
+            sys.exit(1)
+        new_items = filter_items_for_utc_date(all_items, target_date)
+    else:
+        new_items = filter_new_items(all_items, last_run)
 
     max_updates = int(config.get("max_updates", 50))
     if len(new_items) > max_updates:
@@ -618,6 +753,17 @@ def main():
         new_items = new_items[:max_updates]
 
     if not new_items:
+        if args.prompt_for_date is not None:
+            output = "No new updates.\n"
+            prompts = build_translation_prompt(output, config)
+            print(json.dumps({
+                "utc_date": args.prompt_for_date,
+                "summary_markdown": output,
+                "system_prompt": prompts["system_prompt"],
+                "user_prompt": prompts["user_prompt"],
+            }, ensure_ascii=False, indent=2))
+            sys.exit(0)
+
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
@@ -625,7 +771,7 @@ def main():
             print("Translation model OK.", file=sys.stderr)
         except TranslationError as e:
             print(f"Warning: {e}", file=sys.stderr)
-            if not is_dry:
+            if should_send_email:
                 _send_alert_email(
                     "Edookit: translation model unavailable",
                     f"The LLM model check failed:\n\n{e}\n\n"
@@ -634,7 +780,7 @@ def main():
                     config,
                 )
         if not is_dry:
-            cookies["last_run"] = datetime.now().isoformat(timespec="seconds")
+            cookies["last_run"] = _now_in_prague().isoformat(timespec="seconds")
             save_cookies(cookies, args.cookies_file)
         sys.exit(0)
 
@@ -686,19 +832,22 @@ def main():
             if detail:
                 details_by_url[item["url"]] = detail
 
-    # Download attachments to a temp directory
+    # Download attachments only when email delivery is enabled; prompt-only mode
+    # only needs the attachment names already present in the detail parse.
     downloaded_files = []
+    last_run_saved = False
     with tempfile.TemporaryDirectory(prefix="edookit_") as tmp_dir:
-        for detail in details_by_url.values():
-            for att in detail.get("attachments", []):
-                try:
-                    print(f"  Downloading: {att['name']}", file=sys.stderr)
-                    filepath, filename = download_attachment(
-                        att["download_url"], cookies, tmp_dir
-                    )
-                    downloaded_files.append(filepath)
-                except RuntimeError as e:
-                    print(f"  Warning: {e}", file=sys.stderr)
+        if should_send_email:
+            for detail in details_by_url.values():
+                for att in detail.get("attachments", []):
+                    try:
+                        print(f"  Downloading: {att['name']}", file=sys.stderr)
+                        filepath, _ = download_attachment(
+                            att["download_url"], cookies, tmp_dir
+                        )
+                        downloaded_files.append(filepath)
+                    except RuntimeError as e:
+                        print(f"  Warning: {e}", file=sys.stderr)
 
         # Generate summary
         output = format_summary(
@@ -706,11 +855,23 @@ def main():
             upcoming_events=upcoming_events, new_event_urls=new_event_urls,
         )
 
+        if args.prompt_for_date is not None:
+            prompts = build_translation_prompt(output, config)
+            print(json.dumps({
+                "utc_date": args.prompt_for_date,
+                "summary_markdown": output,
+                "system_prompt": prompts["system_prompt"],
+                "user_prompt": prompts["user_prompt"],
+            }, ensure_ascii=False, indent=2))
+            sys.exit(0)
+
+        summary_markdown = output
+
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
         target_lang = config.get("target_language", "English")
         print(f"Translating to {target_lang}...", file=sys.stderr)
-        translated = translate_text(output, config)
+        translated = translate_text(summary_markdown, config)
         if translated.startswith("[Translation failed:"):
             print("Warning: translation failed, using Czech.", file=sys.stderr)
             translation_failed = True
@@ -724,7 +885,7 @@ def main():
 
         # Send email unless dry-run
         email_failed = False
-        if not is_dry and config.get("smtp_host"):
+        if should_send_email and config.get("smtp_host"):
             subject = f"Edookit: {len(new_items)} new update(s)"
             try:
                 print("Sending email...", file=sys.stderr)
@@ -733,14 +894,28 @@ def main():
             except Exception as e:
                 print(f"Error: email failed: {e}", file=sys.stderr)
                 email_failed = True
+
+            if not email_failed:
+                newest = max(
+                    (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
+                    default=_now_in_prague(),
+                )
+                cookies["last_run"] = newest.isoformat(timespec="seconds")
+                save_cookies(cookies, args.cookies_file)
+                print(f"Updated last_run to {cookies['last_run']}", file=sys.stderr)
+                last_run_saved = True
+
+            if not email_failed and config.get("email_test"):
+                print("Sending test email...", file=sys.stderr)
+                send_test_email(subject, summary_markdown, config, downloaded_files)
         # Temp dir and files are cleaned up here
 
     # Update last_run unless dry-run (update even on failures — data was sent
     # to stdout so it's not lost, and we don't want to re-process next run)
-    if not is_dry:
+    if not skip_email_and_last_run and not last_run_saved:
         newest = max(
-            (i["timestamp"] for i in new_items if i["timestamp"]),
-            default=datetime.now(),
+            (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
+            default=_now_in_prague(),
         )
         cookies["last_run"] = newest.isoformat(timespec="seconds")
         save_cookies(cookies, args.cookies_file)
