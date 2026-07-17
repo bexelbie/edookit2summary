@@ -5,6 +5,8 @@ import json
 import re
 import sys
 import tempfile
+from datetime import datetime, date, timedelta
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -41,6 +43,26 @@ URL_PATTERNS = {
     "event": re.compile(r"/timetable/detail\?event=(\d+)"),
     "evaluation": re.compile(r"/evaluation/detail\?evaluationId=(\d+)"),
 }
+
+
+def _normalize_edookit_url(url):
+    """Return a mail-safe Edookit URL path.
+
+    Edookit sometimes emits relative paths without a leading slash.
+    """
+    if not url:
+        return url
+
+    url = url.replace("&amp;", "&").strip()
+    parts = urlsplit(url)
+    if parts.scheme or parts.netloc:
+        return url
+
+    path = parts.path or ""
+    if path and not path.startswith("/"):
+        path = "/" + path
+
+    return urlunsplit(("", "", path, parts.query, parts.fragment))
 
 
 def _normalize_timestamp(ts):
@@ -124,7 +146,7 @@ def parse_inbox(html):
         url = None
         url_match = re.search(r'window\.location\.href="([^"]+)"', onclick)
         if url_match:
-            url = url_match.group(1).replace("&amp;", "&")
+            url = _normalize_edookit_url(url_match.group(1))
 
         # Title from .object-name
         name_el = div.find("div", class_="object-name")
@@ -217,7 +239,7 @@ def parse_action_items(html):
         if not link:
             continue
 
-        url = link.get("href", "")
+        url = _normalize_edookit_url(link.get("href", ""))
         name_div = link.find("div", class_="name")
         info_div = link.find("div", class_="additional-info")
         icon_div = link.find("div", class_="icon")
@@ -284,7 +306,7 @@ def parse_upcoming_events(html):
         url = None
         url_match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)', onclick)
         if url_match:
-            url = url_match.group(1)
+            url = _normalize_edookit_url(url_match.group(1))
 
         cols = row.find_all("li", recursive=False)
         if len(cols) < 3:
@@ -665,10 +687,17 @@ def main(argv=None):
     try:
         cookies = load_cookies(args.cookies_file)
     except FileNotFoundError:
-        print(f"Error: Cookie file not found: {args.cookies_file}", file=sys.stderr)
-        print(file=sys.stderr)
-        print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
-        sys.exit(1)
+        if config.get("plus4u_email") and config.get("plus4u_password"):
+            print(
+                f"Cookie file not found: {args.cookies_file}; bootstrapping a new session via Plus4U login.",
+                file=sys.stderr,
+            )
+            cookies = {}
+        else:
+            print(f"Error: Cookie file not found: {args.cookies_file}", file=sys.stderr)
+            print(file=sys.stderr)
+            print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
+            sys.exit(1)
 
     # Load last_run timestamp
     last_run = None
@@ -679,20 +708,19 @@ def main(argv=None):
         except ValueError:
             pass
 
-    # Ensure session is alive (triggers OIDC refresh or Plus4U login as needed)
-    if not is_dry:
-        try:
-            keepalive(cookies, args.cookies_file, config)
-            print("Session OK.", file=sys.stderr)
-        except AuthError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            if should_send_email:
-                _send_alert_email(
-                    "Edookit: authentication failed",
-                    f"Edookit could not authenticate.\n\n{e}",
-                    config,
-                )
-            sys.exit(1)
+    # Ensure session is alive before any authenticated fetch, including dry runs.
+    try:
+        keepalive(cookies, args.cookies_file, config)
+        print("Session OK.", file=sys.stderr)
+    except AuthError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if should_send_email:
+            _send_alert_email(
+                "Edookit: authentication failed",
+                f"Edookit could not authenticate.\n\n{e}",
+                config,
+            )
+        sys.exit(1)
 
     # Fetch and parse inbox
     print("Fetching inbox...", file=sys.stderr)

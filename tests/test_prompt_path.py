@@ -12,6 +12,7 @@ from edookit import AuthError, build_translation_prompt
 from gather_updates import (
     PRAGUE_TZ,
     _item_timestamp_in_utc,
+    _normalize_edookit_url,
     filter_items_for_utc_date,
     filter_new_items,
     parse_inbox_timestamp,
@@ -26,6 +27,22 @@ class FixedPragueNow(datetime):
 
 
 class PromptPathTests(unittest.TestCase):
+    def test_normalize_edookit_url_handles_relative_absolute_and_encoded_urls(self):
+        self.assertEqual(
+            _normalize_edookit_url("assignments/detail?id=7"),
+            "/assignments/detail?id=7",
+        )
+        self.assertEqual(
+            _normalize_edookit_url("/assignments/detail?id=7"),
+            "/assignments/detail?id=7",
+        )
+        absolute_url = "https://example.test/assignments/detail?id=7"
+        self.assertEqual(_normalize_edookit_url(absolute_url), absolute_url)
+        self.assertEqual(
+            _normalize_edookit_url("messages/detail?id=7&amp;view=full"),
+            "/messages/detail?id=7&view=full",
+        )
+
     def test_build_translation_prompt_returns_exact_prompt_parts(self):
         summary = "- **Test**\n  Details"
         prompts = build_translation_prompt(summary, {"target_language": "English"})

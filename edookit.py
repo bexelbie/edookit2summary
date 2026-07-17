@@ -34,7 +34,8 @@ To refresh cookies:
      uoid.ps, uoid.s, uoid.bs
 
 Alternatively, set PLUS4U_EMAIL and PLUS4U_PASSWORD environment
-variables to enable automatic Plus4U login."""
+variables to enable automatic Plus4U login and cookie bootstrap in
+scripts that call keepalive()."""
 
 BASE_URL = "https://zshusova.edookit.net"
 

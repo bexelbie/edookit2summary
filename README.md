@@ -172,8 +172,10 @@ change the schedule. Sessions are refreshed automatically via OIDC.
 
 ## Cookie session management
 
-Edookit uses Plus4U OIDC authentication. The initial login must be done
-manually in a browser, but subsequent session renewals happen automatically.
+Edookit uses Plus4U OIDC authentication. If `PLUS4U_EMAIL` and
+`PLUS4U_PASSWORD` are configured, `gather_updates.py` can bootstrap a new
+`cookies.json` automatically. Without those credentials, the initial login
+must be done manually in a browser.
 
 ### How session renewal works
 
