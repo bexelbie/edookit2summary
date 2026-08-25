@@ -1,6 +1,8 @@
 name: Check Base Image Updates
 
 on:
+  schedule:
+    - cron: '0 6 1 * *'
   workflow_dispatch:
 
 env:
