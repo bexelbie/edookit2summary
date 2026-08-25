@@ -76,6 +76,7 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -103,7 +104,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.tag.outputs.version }}
             BUILD_DATE=${{ steps.build_meta.outputs.build_date }}
-            VCS_REF=${{ github.sha }}
+            VCS_REF=${{ steps.tag.outputs.revision }}
             BASE_IMAGE_REF=${{ steps.base.outputs.ref }}
             BASE_IMAGE_NAME=${{ steps.base.outputs.name }}
             BASE_IMAGE_DIGEST=${{ steps.base.outputs.digest }}
