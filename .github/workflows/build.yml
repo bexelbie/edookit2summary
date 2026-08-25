@@ -6,36 +6,106 @@ name: Build container
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Application revision to build, such as v0.8.2"
+        required: false
+        type: string
 
 permissions:
+  contents: read
   packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: container-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Bootstrap refresh-capable Containerfile
+        if: inputs.source_ref != ''
+        run: git checkout "${GITHUB_SHA}" -- Containerfile
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Resolve base image digest
+        id: base
+        env:
+          BASE_IMAGE_NAME: python:3.13-slim
+        run: |
+          set -euo pipefail
+          digest="$(crane digest "${BASE_IMAGE_NAME}")"
+          {
+            echo "name=${BASE_IMAGE_NAME}"
+            echo "digest=${digest}"
+            echo "ref=${BASE_IMAGE_NAME}@${digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Determine image metadata
+        id: tag
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || github.ref }}
+        run: |
+          if [[ "$SOURCE_REF" == refs/tags/v* ]]; then
+            tag="${SOURCE_REF#refs/tags/}"
+            version="${SOURCE_REF#refs/tags/v}"
+          elif [[ "$SOURCE_REF" == v* ]]; then
+            tag="$SOURCE_REF"
+            version="${SOURCE_REF#v}"
+          else
+            tag=latest
+            version=dev
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine image tag
-        id: tag
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Set build metadata
+        id: build_meta
+        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - name: Build image
-        run: podman build -t ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }} .
-
-      - name: Push image
-        run: podman push ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
-
-      - name: Push latest for tags too
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          podman tag ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }} ghcr.io/${{ github.repository }}:latest
-          podman push ghcr.io/${{ github.repository }}:latest
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Containerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            VERSION=${{ steps.tag.outputs.version }}
+            BUILD_DATE=${{ steps.build_meta.outputs.build_date }}
+            VCS_REF=${{ github.sha }}
+            BASE_IMAGE_REF=${{ steps.base.outputs.ref }}
+            BASE_IMAGE_NAME=${{ steps.base.outputs.name }}
+            BASE_IMAGE_DIGEST=${{ steps.base.outputs.digest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

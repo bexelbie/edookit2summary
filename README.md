@@ -170,6 +170,16 @@ systemctl --user enable --now edookit2summary.timer
 The timer runs daily at 15:00. Adjust `OnCalendar=` in the timer file to
 change the schedule. Sessions are refreshed automatically via OIDC.
 
+### Base image refresh
+
+Normal releases resolve and record the `python:3.13-slim` digest. The manually
+triggered refresh workflow checks for drift, then checks out the published
+application revision, runs the release test gate, and publishes `latest` plus a
+`base-refresh-YYYYMMDD-HHMMSS` audit tag. Scheduled checks stay disabled until
+one instrumented release has been published and its labels verified. Set the
+optional `BEX_NOTIFY_WEBHOOK_URL` repository secret to receive actionable
+refresh notifications.
+
 ## Cookie session management
 
 Edookit uses Plus4U OIDC authentication. If `PLUS4U_EMAIL` and
