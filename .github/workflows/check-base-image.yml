@@ -84,6 +84,10 @@ jobs:
           ref: ${{ steps.check.outputs.current_revision }}
           fetch-depth: 0
 
+      - name: Bootstrap refresh-capable Containerfile
+        if: steps.check.outputs.changed == 'true' && steps.check.outputs.current_base_digest == ''
+        run: git checkout "${GITHUB_SHA}" -- Containerfile
+
       - name: Set up Python
         if: steps.check.outputs.changed == 'true'
         uses: actions/setup-python@v6
@@ -138,7 +142,7 @@ jobs:
               if [ "${{ steps.build.outcome }}" = "success" ]; then
                 echo "- Result: rebuilt version \`${{ steps.check.outputs.current_version }}\` from revision \`${{ steps.check.outputs.current_revision }}\`"
               else
-                echo "- Result: change detected but tests or build failed; nothing was published"
+                echo "- Result: change detected but tests or build failed; deployment tag was not updated; audit tag may have been published"
               fi
             else
               echo "- Published image: \`${{ steps.check.outputs.published_image }}\`"
@@ -147,22 +151,67 @@ jobs:
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Notify bex
-        if: always() && (job.status != 'success' || steps.check.outputs.changed == 'true')
+      - name: Submit automated report
+        if: failure() || steps.check.outputs.changed == 'true'
         env:
-          BEX_NOTIFY_WEBHOOK_URL: ${{ secrets.BEX_NOTIFY_WEBHOOK_URL }}
-          STATUS: ${{ job.status }}
-          CHANGED: ${{ steps.check.outputs.changed }}
+          NOTIFICATION_URL: ${{ secrets.NOTIFICATION_URL }}
+          REPORT_EVENT: edookit2summary.base-refresh.completed
+          REPORT_OUTCOME: ${{ job.status }}
+          REPORT_WORKFLOW: ${{ github.workflow }}
+          REPORT_CHANGED: ${{ steps.check.outputs.changed }}
+          REPORT_PUBLISHED_IMAGE: ${{ steps.check.outputs.published_image }}
+          REPORT_CURRENT_BASE_DIGEST: ${{ steps.check.outputs.current_base_digest }}
+          REPORT_UPSTREAM_DIGEST: ${{ steps.check.outputs.upstream_digest }}
+          REPORT_CURRENT_REVISION: ${{ steps.check.outputs.current_revision }}
+          REPORT_CURRENT_VERSION: ${{ steps.check.outputs.current_version }}
         run: |
           set -euo pipefail
-          if [ -z "${BEX_NOTIFY_WEBHOOK_URL:-}" ]; then
-            echo "BEX_NOTIFY_WEBHOOK_URL is not configured - skipping notification"
-            exit 0
-          fi
+          : "${NOTIFICATION_URL:?NOTIFICATION_URL must be configured}"
+          : "${REPORT_EVENT:?REPORT_EVENT must be set}"
+          : "${REPORT_OUTCOME:?REPORT_OUTCOME must be set}"
+          : "${REPORT_WORKFLOW:?REPORT_WORKFLOW must be set}"
+          : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
+          : "${GITHUB_RUN_ID:?GITHUB_RUN_ID must be set}"
+          : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT must be set}"
+          : "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL must be set}"
 
-          message="${GITHUB_REPOSITORY} base image check ${STATUS}; base=${BASE_IMAGE_NAME}; changed=${CHANGED:-unknown}; run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          payload="$(jq -n --arg message "${message}" '{message:$message}')"
-          curl --fail --silent --show-error --max-time 10 \
-            -H "Content-Type: application/json" \
-            -d "${payload}" \
-            "${BEX_NOTIFY_WEBHOOK_URL}"
+          event_id="github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${REPORT_EVENT}"
+          occurred_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload="$(jq -n \
+            --arg workflow "$REPORT_WORKFLOW" \
+            --arg run_url "$run_url" \
+            --arg changed "${REPORT_CHANGED:-unknown}" \
+            --arg published_image "${REPORT_PUBLISHED_IMAGE:-unknown}" \
+            --arg current_base_digest "${REPORT_CURRENT_BASE_DIGEST:-unknown}" \
+            --arg upstream_digest "${REPORT_UPSTREAM_DIGEST:-unknown}" \
+            --arg revision "${REPORT_CURRENT_REVISION:-unknown}" \
+            --arg version "${REPORT_CURRENT_VERSION:-unknown}" \
+            '{workflow:$workflow,run_url:$run_url,changed:$changed,
+              published_image:$published_image,current_base_digest:$current_base_digest,
+              upstream_digest:$upstream_digest,revision:$revision,version:$version}')"
+          jq -e 'type == "object"' >/dev/null <<<"$payload"
+          report="$(jq -n \
+            --arg event_id "$event_id" \
+            --arg occurred_at "$occurred_at" \
+            --arg event "$REPORT_EVENT" \
+            --arg outcome "$REPORT_OUTCOME" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson payload "$payload" \
+            '{schema:1,event_id:$event_id,occurred_at:$occurred_at,
+              source:"github-actions",event:$event,outcome:$outcome,
+              payload:$payload,repository:$repository}')"
+
+          for attempt in 1 2 3; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 10 -H 'Content-Type: application/json' \
+              --data "$report" "$NOTIFICATION_URL" 2>/dev/null)" || status=000
+            case "$status" in
+              2??) exit 0 ;;
+            esac
+            sleep "$attempt"
+          done
+
+          printf 'report submission failed after 3 attempts (last HTTP status %s)\n' \
+            "$status" >&2
+          exit 1

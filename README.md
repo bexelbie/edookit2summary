@@ -175,10 +175,10 @@ change the schedule. Sessions are refreshed automatically via OIDC.
 Normal releases resolve and record the `python:3.13-slim` digest. The manually
 triggered refresh workflow checks for drift, then checks out the published
 application revision, runs the release test gate, and publishes `latest` plus a
-`base-refresh-YYYYMMDD-HHMMSS` audit tag. Scheduled checks stay disabled until
-one instrumented release has been published and its labels verified. Set the
-optional `BEX_NOTIFY_WEBHOOK_URL` repository secret to receive actionable
-refresh notifications.
+`base-refresh-YYYYMMDD-HHMMSS` audit tag. Scheduled checks run monthly and can
+also be triggered manually. Configure the `NOTIFICATION_URL` repository secret
+to receive failure and refresh outcome reports; unchanged checks do not submit
+reports.
 
 ## Cookie session management
 
