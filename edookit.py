@@ -863,7 +863,7 @@ def build_translation_prompt(text, config):
     system_prompt = (
         f"You translate Czech school notifications to {target_lang}. "
         "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
-        "The student is currently in first grade (I.B is the class section).\n\n"
+        "The student is currently in second grade (2.B is the class section).\n\n"
         "Common Czech subject abbreviations:\n"
         "- Čj = Czech language (Český jazyk)\n"
         "- M = Mathematics (Matematika)\n"
@@ -883,7 +883,7 @@ def build_translation_prompt(text, config):
         "- Keep all dates, times, and numbers unchanged\n"
         "- Keep all personal names unchanged (e.g., Mgr. Vladimíra Kolková)\n"
         "- Keep textbook and workbook names in Czech (e.g., Slabikář, Písanka, Živá abeceda)\n"
-        "- Translate subject names in titles (e.g., 'Čj - I.B' → 'Czech - I.B')\n"
+        "- Translate subject names in titles (e.g., 'Čj - 2.B' → 'Czech - 2.B')\n"
         "- Output only the translated text, no commentary"
     )
     return {"system_prompt": system_prompt, "user_prompt": text}
