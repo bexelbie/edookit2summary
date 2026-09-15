@@ -154,7 +154,9 @@ class TestEmailFlowTests(unittest.TestCase):
             order.append(f"test_email:{len(order)}:{gather_updates.save_cookies.call_count}")
             return True
 
-        with patch("gather_updates.load_cookies", return_value={}), \
+        with patch("gather_updates.load_cookies", return_value={
+            "last_run": "2026-06-04T00:00:00+02:00",
+        }), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \
@@ -198,7 +200,9 @@ class TestEmailFlowTests(unittest.TestCase):
             "timestamp": datetime(2026, 6, 4, 23, 30, tzinfo=ZoneInfo("Europe/Prague")),
         }
 
-        with patch("gather_updates.load_cookies", return_value={}), \
+        with patch("gather_updates.load_cookies", return_value={
+            "last_run": "2026-06-04T00:00:00+02:00",
+        }), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \
@@ -228,7 +232,9 @@ class TestEmailFlowTests(unittest.TestCase):
             "timestamp": datetime(2026, 6, 4, 23, 30, tzinfo=timezone.utc),
         }
 
-        with patch("gather_updates.load_cookies", return_value={}), \
+        with patch("gather_updates.load_cookies", return_value={
+            "last_run": "2026-06-04T00:00:00+02:00",
+        }), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \

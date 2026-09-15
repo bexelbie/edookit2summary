@@ -14,6 +14,7 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 SEEN_ITEMS_KEY = "seen_items"
 SEEN_ITEMS_RETENTION_DAYS = 90
 SEEN_ITEMS_MAX_COUNT = 500
+BOOTSTRAP_WINDOW = timedelta(hours=24)
 
 from bs4 import BeautifulSoup
 
@@ -222,6 +223,34 @@ def filter_new_items(items, seen_items):
         i for i in items
         if _item_identity(i) and _item_identity(i) not in seen_items
     ]
+
+
+def _stored_timestamp(value):
+    """Parse a stored timestamp, returning None for invalid values."""
+    try:
+        return _normalize_timestamp(datetime.fromisoformat(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def bootstrap_seen_items(items, seen_items, last_run=None, now=None):
+    """Seed the identity ledger and return the timestamp used as its boundary."""
+    if seen_items:
+        return seen_items, None
+
+    now = now or _now_in_prague()
+    boundary = _stored_timestamp(last_run)
+    if boundary is None:
+        boundary = now - BOOTSTRAP_WINDOW
+
+    seeded = dict(seen_items)
+    for item in items:
+        timestamp = item.get("timestamp")
+        identity = _item_identity(item)
+        if identity and (not timestamp or _normalize_timestamp(timestamp) <= boundary):
+            seeded[identity] = now.isoformat(timespec="seconds")
+
+    return seeded, boundary
 
 
 def _item_timestamp_in_utc(item):
@@ -723,10 +752,10 @@ def main(argv=None):
             print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
             sys.exit(1)
 
-    seen_items = cookies.get(SEEN_ITEMS_KEY)
-    if not isinstance(seen_items, dict):
-        seen_items = {}
-    cookies.pop("last_run", None)
+    stored_seen_items = cookies.get(SEEN_ITEMS_KEY)
+    seen_items = stored_seen_items if isinstance(stored_seen_items, dict) else {}
+    last_run = cookies.get("last_run")
+    needs_bootstrap = not seen_items
 
     # Ensure session is alive before any authenticated fetch, including dry runs.
     try:
@@ -756,6 +785,31 @@ def main(argv=None):
                 config,
             )
         sys.exit(1)
+
+    state_changed = False
+    if needs_bootstrap:
+        seen_items, bootstrap_boundary = bootstrap_seen_items(
+            all_items,
+            seen_items,
+            last_run,
+        )
+        cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
+        cookies.pop("last_run", None)
+        state_changed = True
+        if _stored_timestamp(last_run):
+            print(
+                f"Initialized seen-item ledger from last_run through "
+                f"{bootstrap_boundary.isoformat(timespec='seconds')}.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Initialized seen-item ledger with a {BOOTSTRAP_WINDOW} "
+                f"bootstrap window ending {bootstrap_boundary.isoformat(timespec='seconds')}.",
+                file=sys.stderr,
+            )
+    else:
+        cookies.pop("last_run", None)
 
     if args.prompt_for_date is not None:
         try:
@@ -794,6 +848,8 @@ def main(argv=None):
             }, ensure_ascii=False, indent=2))
             sys.exit(0)
 
+        if state_changed and not skip_delivery:
+            save_cookies(cookies, args.cookies_file)
         print("No new updates since last run.", file=sys.stderr)
         # Good time to check that the translation model is still available
         try:
@@ -930,6 +986,7 @@ def main(argv=None):
                         seen_items[identity] = sent_at
                 cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
                 save_cookies(cookies, args.cookies_file)
+                state_changed = False
 
             if not email_failed and config.get("email_test"):
                 print("Sending test email...", file=sys.stderr)
@@ -944,6 +1001,10 @@ def main(argv=None):
             if identity:
                 seen_items[identity] = sent_at
         cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
+        save_cookies(cookies, args.cookies_file)
+        state_changed = False
+
+    if state_changed and not skip_delivery:
         save_cookies(cookies, args.cookies_file)
 
     if translation_failed or email_failed:

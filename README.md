@@ -127,6 +127,14 @@ Normal runs store delivered inbox item URLs in `seen_items` in the cookies file.
 Entries are retained for 90 days and capped at 500 items. Item delivery is
 determined by the stored item identity, never by the displayed timestamp.
 
+On the first normal run after upgrading from timestamp tracking, the application
+uses the existing `last_run` value to seed the ledger with currently visible
+items at or before that time, then processes only unseeded identities. If there
+is no valid `last_run`, it seeds currently visible items older than 24 hours and
+processes only the last 24 hours. This one-time bootstrap avoids replaying the
+whole inbox while preserving the old cursor's starting point. Dry-run and
+prompt-for-date modes do not perform or save bootstrap state.
+
 `--prompt-for-date YYYY-MM-DD` uses the same summary-generation path as the
 normal update flow, but stops before any translation attempt. It prints JSON
 with `utc_date`, `summary_markdown`, `system_prompt`, and `user_prompt` and

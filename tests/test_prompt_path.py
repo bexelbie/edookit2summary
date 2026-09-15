@@ -14,6 +14,7 @@ from gather_updates import (
     _item_timestamp_in_utc,
     _normalize_edookit_url,
     _prune_seen_items,
+    bootstrap_seen_items,
     filter_items_for_utc_date,
     filter_new_items,
     parse_inbox_timestamp,
@@ -102,6 +103,51 @@ class PromptPathTests(unittest.TestCase):
 
         self.assertNotIn("/messages/detail?message=old", retained)
         self.assertEqual(len(retained), 500)
+
+    def test_bootstrap_seen_items_migrates_items_through_last_run(self):
+        now = datetime(2026, 6, 5, 12, 0, tzinfo=PRAGUE_TZ)
+        items = [
+            {
+                "url": "/messages/detail?message=old",
+                "timestamp": datetime(2026, 6, 5, 11, 0, tzinfo=PRAGUE_TZ),
+            },
+            {"url": "/messages/detail?message=undated", "timestamp": None},
+            {
+                "url": "/messages/detail?message=new",
+                "timestamp": datetime(2026, 6, 5, 13, 0, tzinfo=PRAGUE_TZ),
+            },
+        ]
+
+        seen, boundary = bootstrap_seen_items(
+            items,
+            {},
+            "2026-06-05T12:00:00+02:00",
+            now,
+        )
+
+        self.assertEqual(boundary, now.replace(hour=12))
+        self.assertIn("/messages/detail?message=old", seen)
+        self.assertIn("/messages/detail?message=undated", seen)
+        self.assertNotIn("/messages/detail?message=new", seen)
+
+    def test_bootstrap_seen_items_without_cursor_keeps_last_24_hours(self):
+        now = datetime(2026, 6, 5, 12, 0, tzinfo=PRAGUE_TZ)
+        items = [
+            {
+                "url": "/messages/detail?message=old",
+                "timestamp": datetime(2026, 6, 4, 11, 59, tzinfo=PRAGUE_TZ),
+            },
+            {
+                "url": "/messages/detail?message=recent",
+                "timestamp": datetime(2026, 6, 4, 12, 1, tzinfo=PRAGUE_TZ),
+            },
+        ]
+
+        seen, boundary = bootstrap_seen_items(items, {}, None, now)
+
+        self.assertEqual(boundary, datetime(2026, 6, 4, 12, 0, tzinfo=PRAGUE_TZ))
+        self.assertIn("/messages/detail?message=old", seen)
+        self.assertNotIn("/messages/detail?message=recent", seen)
 
     def test_prompt_for_date_skips_downloads_and_email_side_effects(self):
         item = {
