@@ -2,6 +2,7 @@
 
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from datetime import date, datetime, timezone
@@ -50,8 +51,25 @@ class PromptPathTests(unittest.TestCase):
         prompts = build_translation_prompt(summary, {"target_language": "English"})
 
         self.assertEqual(prompts["user_prompt"], summary)
-        self.assertIn("You translate Czech school notifications to English.", prompts["system_prompt"])
-        self.assertIn("Output only the translated text, no commentary", prompts["system_prompt"])
+        self.assertEqual(
+            prompts["system_prompt"],
+            "You translate Czech school notifications to English. "
+            "Preserve Markdown structure, line breaks, dates, times, numbers, "
+            "names, and terminology where appropriate. "
+            "Output only the translated text, with no commentary.",
+        )
+
+    def test_build_translation_prompt_loads_sibling_custom_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cookies_file = f"{directory}/cookies.json"
+            with open(f"{directory}/translationprompt.txt", "w", encoding="utf-8") as prompt:
+                prompt.write("Translate to {target_language}.\n")
+
+            prompts = build_translation_prompt(
+                "Summary", {"target_language": "German", "cookies_file": cookies_file}
+            )
+
+        self.assertEqual(prompts["system_prompt"], "Translate to German.\n")
 
     def test_filter_items_for_utc_date_uses_utc_day_boundaries(self):
         items = [

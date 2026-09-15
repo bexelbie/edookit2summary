@@ -31,6 +31,12 @@ python3 -m venv .venv
 **Edookit cookies** (`cookies.json`) — ephemeral session cookies that
 auto-renew on each request. See `cookies.json.example` for the template.
 
+**Translation prompt** (`translationprompt.txt`) — optional UTF-8 text file
+read from the same directory as the cookies file. Its contents replace the
+default translation prompt, and `{target_language}` is replaced with the
+configured `TARGET_LANGUAGE` value. If the file is absent, the application
+uses a thin built-in prompt.
+
 **Static config** (environment variables) — LLM and SMTP settings.
 See `edookit2summary.env.example` for the full list:
 
@@ -169,7 +175,8 @@ Copy `edookit2summary.container` and `edookit2summary.timer` to your quadlet
 directory (e.g. `~/.config/containers/systemd/`). Edit the `.container` file
 to set:
 
-- `Volume=` — host path where `cookies.json` lives, mapped to `/data`
+- `Volume=` — host path where `cookies.json` and `translationprompt.txt` live,
+   mapped to `/data`
 - `EnvironmentFile=` — path to your env file with Azure/SMTP config
 - `Network=` — Podman network that can reach the SMTP server
 

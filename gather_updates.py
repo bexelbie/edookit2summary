@@ -736,6 +736,7 @@ def main(argv=None):
     skip_delivery = is_dry or args.prompt_for_date is not None
     should_send_email = not skip_delivery
     config = load_config()
+    config["cookies_file"] = args.cookies_file
 
     try:
         cookies = load_cookies(args.cookies_file)

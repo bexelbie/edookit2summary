@@ -3,6 +3,7 @@
 
 import json
 import os
+from pathlib import Path
 import re
 import secrets
 import smtplib
@@ -860,32 +861,19 @@ def build_translation_prompt(text, config):
         return {"system_prompt": "", "user_prompt": text}
 
     target_lang = config.get("target_language", "English")
-    system_prompt = (
-        f"You translate Czech school notifications to {target_lang}. "
-        "Context: ZŠ Husova is an elementary school in Brno, Czech Republic. "
-        "The student is currently in second grade (2.B is the class section).\n\n"
-        "Common Czech subject abbreviations:\n"
-        "- Čj = Czech language (Český jazyk)\n"
-        "- M = Mathematics (Matematika)\n"
-        "- Prv = Social studies/science for early grades (Prvouka)\n"
-        "- Aj = English language (Anglický jazyk)\n"
-        "- Tv = Physical education (Tělesná výchova)\n"
-        "- Vv = Art (Výtvarná výchova)\n"
-        "- Hv = Music (Hudební výchova)\n"
-        "- Pč = Crafts/practical activities (Pracovní činnosti)\n\n"
-        "Common terms:\n"
-        "- DÚ = homework (domácí úkol)\n"
-        "- Písemná práce = written test\n"
-        "- Obecné hodnocení = general assessment\n"
-        "- Třídní schůzky = parent-teacher meetings\n\n"
-        "Rules:\n"
-        "- Preserve all markdown formatting, structure, and line breaks exactly\n"
-        "- Keep all dates, times, and numbers unchanged\n"
-        "- Keep all personal names unchanged (e.g., Mgr. Vladimíra Kolková)\n"
-        "- Keep textbook and workbook names in Czech (e.g., Slabikář, Písanka, Živá abeceda)\n"
-        "- Translate subject names in titles (e.g., 'Čj - 2.B' → 'Czech - 2.B')\n"
-        "- Output only the translated text, no commentary"
+    prompt_file = Path(config.get("cookies_file", "cookies.json")).with_name(
+        "translationprompt.txt"
     )
+    if prompt_file.is_file():
+        system_prompt = prompt_file.read_text(encoding="utf-8")
+    else:
+        system_prompt = (
+            f"You translate Czech school notifications to {target_lang}. "
+            "Preserve Markdown structure, line breaks, dates, times, numbers, "
+            "names, and terminology where appropriate. "
+            "Output only the translated text, with no commentary."
+        )
+    system_prompt = system_prompt.replace("{target_language}", target_lang)
     return {"system_prompt": system_prompt, "user_prompt": text}
 
 
