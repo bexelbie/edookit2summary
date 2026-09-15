@@ -14,6 +14,7 @@ from datetime import date
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import urlencode, parse_qs, urlparse
 
 
@@ -647,6 +648,22 @@ _DEFAULT_LLM_MAX_RETRIES = 3
 _RETRY_SLEEP_SECONDS = 120
 
 
+def _post_json(url, headers, payload, service):
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(request) as response:
+            return str(response.status), response.read().decode("utf-8")
+    except urllib_error.HTTPError as e:
+        return str(e.code), e.read().decode("utf-8", errors="replace")
+    except urllib_error.URLError as e:
+        raise TranslationError(f"HTTP request failed reaching {service}: {e.reason}") from e
+
+
 def _azure_openai_chat(config, messages, deployment, max_tokens=None):
     """Send a single chat completion request to an Azure OpenAI deployment.
 
@@ -664,27 +681,15 @@ def _azure_openai_chat(config, messages, deployment, max_tokens=None):
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
 
-    # NOTE: API key is in curl args (visible via ps). Payload goes via stdin
-    # to avoid body exposure.  A future refactor could use a Python HTTP
-    # library to keep headers in-process.  Container PID namespaces mitigate.
-    result = subprocess.run(
-        [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "-X", "POST", url,
-            "-H", "Content-Type: application/json",
-            "-H", f"api-key: {config['azure_openai_key']}",
-            "-d", "@-",
-        ],
-        input=json.dumps(payload),
-        capture_output=True, text=True
+    status, body = _post_json(
+        url,
+        {
+            "Content-Type": "application/json",
+            "api-key": config["azure_openai_key"],
+        },
+        payload,
+        "Azure OpenAI",
     )
-
-    if result.returncode != 0:
-        raise TranslationError(f"curl failed reaching Azure OpenAI: {result.stderr}")
-
-    lines = result.stdout.rsplit("\n", 1)
-    body = lines[0] if len(lines) > 1 else result.stdout
-    status = lines[-1].strip() if len(lines) > 1 else ""
 
     if status == "404":
         raise TranslationError(
@@ -727,25 +732,15 @@ def _gemini_chat(config, text, model, system_instruction=None):
         f"/models/{model}:generateContent"
     )
 
-    # NOTE: API key in curl args — see Azure comment for rationale.
-    result = subprocess.run(
-        [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "-X", "POST", url,
-            "-H", "Content-Type: application/json",
-            "-H", f"x-goog-api-key: {key}",
-            "-d", "@-",
-        ],
-        input=json.dumps(payload),
-        capture_output=True, text=True
+    status, body = _post_json(
+        url,
+        {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key,
+        },
+        payload,
+        f"Gemini ({model})",
     )
-
-    if result.returncode != 0:
-        raise TranslationError(f"curl failed reaching Gemini ({model}): {result.stderr}")
-
-    lines = result.stdout.rsplit("\n", 1)
-    body = lines[0] if len(lines) > 1 else result.stdout
-    status = lines[-1].strip() if len(lines) > 1 else ""
 
     if not status.startswith("2"):
         raise TranslationError(f"Gemini ({model}) returned HTTP {status}: {body[:200]}")
