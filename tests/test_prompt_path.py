@@ -13,6 +13,7 @@ from gather_updates import (
     PRAGUE_TZ,
     _item_timestamp_in_utc,
     _normalize_edookit_url,
+    _prune_seen_items,
     filter_items_for_utc_date,
     filter_new_items,
     parse_inbox_timestamp,
@@ -74,27 +75,33 @@ class PromptPathTests(unittest.TestCase):
         self.assertEqual(ts.tzinfo, PRAGUE_TZ)
         self.assertEqual(ts, datetime(2026, 6, 4, 23, 30, tzinfo=PRAGUE_TZ))
 
-    def test_filter_new_items_handles_relative_and_absolute_timestamps(self):
-        with patch("gather_updates.datetime", FixedPragueNow):
-            items = [
-                {"title": "relative", "timestamp": parse_inbox_timestamp("Today, 23:30")},
-                {"title": "absolute", "timestamp": parse_inbox_timestamp("4. 6. 2026, 23:30")},
-            ]
-
-        last_run = datetime(2026, 6, 4, 22, 0, tzinfo=PRAGUE_TZ)
-
-        filtered = filter_new_items(items, last_run)
-
-        self.assertEqual([item["title"] for item in filtered], ["relative", "absolute"])
-
-    def test_filter_new_items_accepts_persisted_naive_last_run(self):
+    def test_filter_new_items_uses_seen_urls(self):
         items = [
-            {"title": "new", "timestamp": datetime(2026, 6, 5, 12, 30, tzinfo=PRAGUE_TZ)},
+            {"title": "sent", "url": "/messages/detail?message=1"},
+            {"title": "late", "url": "/assignments/detail?assignment=2"},
         ]
 
-        filtered = filter_new_items(items, datetime(2026, 6, 5, 11, 0))
+        filtered = filter_new_items(
+            items,
+            {"/messages/detail?message=1": "2026-06-05T12:00:00+02:00"},
+        )
 
-        self.assertEqual([item["title"] for item in filtered], ["new"])
+        self.assertEqual([item["title"] for item in filtered], ["late"])
+
+    def test_prune_seen_items_applies_age_and_count_bounds(self):
+        now = datetime(2026, 6, 5, 12, 0, tzinfo=PRAGUE_TZ)
+        seen = {
+            "/messages/detail?message=old": "2026-03-06T12:00:00+01:00",
+            **{
+                f"/messages/detail?message={i}": "2026-06-05T12:00:00+02:00"
+                for i in range(501)
+            },
+        }
+
+        retained = _prune_seen_items(seen, now)
+
+        self.assertNotIn("/messages/detail?message=old", retained)
+        self.assertEqual(len(retained), 500)
 
     def test_prompt_for_date_skips_downloads_and_email_side_effects(self):
         item = {

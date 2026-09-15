@@ -135,7 +135,7 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(used_config["azure_openai_api_version"], "2025-01-01-preview")
         send_email.assert_called_once()
 
-    def test_main_persists_last_run_before_test_lane(self):
+    def test_main_persists_seen_items_before_test_lane(self):
         item = {
             "type": "inboxMessage",
             "title": "Test",
@@ -154,7 +154,7 @@ class TestEmailFlowTests(unittest.TestCase):
             order.append(f"test_email:{len(order)}:{gather_updates.save_cookies.call_count}")
             return True
 
-        with patch("gather_updates.load_cookies", return_value={"last_run": None}), \
+        with patch("gather_updates.load_cookies", return_value={}), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \
@@ -187,7 +187,7 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("test_email:") for item in order))
         self.assertLess(order.index("save_cookies"), order.index(next(item for item in order if item.startswith("test_email:"))))
 
-    def test_main_updates_last_run_without_aware_naive_mismatch(self):
+    def test_main_persists_seen_items_after_delivery(self):
         item = {
             "type": "inboxMessage",
             "title": "Test",
@@ -198,7 +198,7 @@ class TestEmailFlowTests(unittest.TestCase):
             "timestamp": datetime(2026, 6, 4, 23, 30, tzinfo=ZoneInfo("Europe/Prague")),
         }
 
-        with patch("gather_updates.load_cookies", return_value={"last_run": "2026-06-03T10:00:00"}), \
+        with patch("gather_updates.load_cookies", return_value={}), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \
@@ -215,7 +215,7 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(send_email.call_count, 1)
         save_cookies.assert_called_once()
         saved_cookies = save_cookies.call_args.args[0]
-        self.assertTrue(saved_cookies["last_run"].endswith("+02:00") or "+00:00" in saved_cookies["last_run"])
+        self.assertIn("/messages/1", saved_cookies["seen_items"])
 
     def test_main_keeps_primary_email_path_when_test_email_fails(self):
         item = {
@@ -228,7 +228,7 @@ class TestEmailFlowTests(unittest.TestCase):
             "timestamp": datetime(2026, 6, 4, 23, 30, tzinfo=timezone.utc),
         }
 
-        with patch("gather_updates.load_cookies", return_value={"last_run": None}), \
+        with patch("gather_updates.load_cookies", return_value={}), \
                 patch("gather_updates.keepalive"), \
                 patch("gather_updates.fetch_page", side_effect=["inbox", "dashboard"]), \
                 patch("gather_updates.parse_inbox", return_value=[item]), \

@@ -1,5 +1,5 @@
 # ABOUTME: Fetches edookit inbox, filters new items, retrieves details, and outputs a summary.
-# ABOUTME: Tracks last-run timestamp in cookies.json to only show new items.
+# ABOUTME: Tracks delivered item identities in cookies.json to avoid duplicates.
 
 import json
 import re
@@ -11,6 +11,9 @@ from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
+SEEN_ITEMS_KEY = "seen_items"
+SEEN_ITEMS_RETENTION_DAYS = 90
+SEEN_ITEMS_MAX_COUNT = 500
 
 from bs4 import BeautifulSoup
 
@@ -189,14 +192,35 @@ def parse_inbox(html):
     return items
 
 
-def filter_new_items(items, last_run):
-    """Return only items newer than last_run datetime."""
-    if last_run is None:
-        return items
-    last_run = _normalize_timestamp(last_run)
+def _item_identity(item):
+    """Return the stable identity used to track delivered inbox items."""
+    return _normalize_edookit_url(item.get("url", ""))
+
+
+def _prune_seen_items(seen_items, now=None):
+    """Keep delivered item identities within the age and count bounds."""
+    now = now or _now_in_prague()
+    cutoff = now - timedelta(days=SEEN_ITEMS_RETENTION_DAYS)
+    retained = {}
+    for identity, recorded_at in seen_items.items():
+        try:
+            timestamp = _normalize_timestamp(datetime.fromisoformat(recorded_at))
+        except (TypeError, ValueError):
+            continue
+        if timestamp >= cutoff:
+            retained[identity] = timestamp.isoformat(timespec="seconds")
+
+    return dict(
+        sorted(retained.items(), key=lambda entry: entry[1], reverse=True)
+        [:SEEN_ITEMS_MAX_COUNT]
+    )
+
+
+def filter_new_items(items, seen_items):
+    """Return inbox items not already delivered."""
     return [
         i for i in items
-        if i.get("timestamp") and _normalize_timestamp(i["timestamp"]) > last_run
+        if _item_identity(i) and _item_identity(i) not in seen_items
     ]
 
 
@@ -670,9 +694,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Gather edookit updates")
     parser.add_argument("cookies_file", nargs="?", default="cookies.json")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Print markdown to stdout, skip email and last_run update")
+                        help="Print markdown to stdout, skip email and ledger update")
     parser.add_argument("--dry-run-html", action="store_true",
-                        help="Print rendered HTML to stdout, skip email and last_run update")
+                        help="Print rendered HTML to stdout, skip email and ledger update")
     parser.add_argument(
         "--prompt-for-date",
         metavar="YYYY-MM-DD",
@@ -680,8 +704,8 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     is_dry = args.dry_run or args.dry_run_html
-    skip_email_and_last_run = is_dry or args.prompt_for_date is not None
-    should_send_email = not skip_email_and_last_run
+    skip_delivery = is_dry or args.prompt_for_date is not None
+    should_send_email = not skip_delivery
     config = load_config()
 
     try:
@@ -699,14 +723,10 @@ def main(argv=None):
             print(COOKIE_REFRESH_INSTRUCTIONS, file=sys.stderr)
             sys.exit(1)
 
-    # Load last_run timestamp
-    last_run = None
-    last_run_str = cookies.get("last_run")
-    if last_run_str:
-        try:
-            last_run = _normalize_timestamp(datetime.fromisoformat(last_run_str))
-        except ValueError:
-            pass
+    seen_items = cookies.get(SEEN_ITEMS_KEY)
+    if not isinstance(seen_items, dict):
+        seen_items = {}
+    cookies.pop("last_run", None)
 
     # Ensure session is alive before any authenticated fetch, including dry runs.
     try:
@@ -745,12 +765,22 @@ def main(argv=None):
             sys.exit(1)
         new_items = filter_items_for_utc_date(all_items, target_date)
     else:
-        new_items = filter_new_items(all_items, last_run)
+        new_items = filter_new_items(all_items, seen_items)
 
     max_updates = int(config.get("max_updates", 50))
     if len(new_items) > max_updates:
         print(f"Limiting {len(new_items)} new updates to {max_updates}.", file=sys.stderr)
         new_items = new_items[:max_updates]
+
+    if new_items:
+        print(
+            "New inbox items: " + "; ".join(
+                f"{item['type']} {item['url']} "
+                f"[{item['timestamp_raw'] or 'no timestamp'}] {item['title']}"
+                for item in new_items
+            ),
+            file=sys.stderr,
+        )
 
     if not new_items:
         if args.prompt_for_date is not None:
@@ -779,9 +809,6 @@ def main(argv=None):
                     "Update the GEMINI_API_KEY or AZURE_OPENAI_DEPLOYMENT environment variables.",
                     config,
                 )
-        if not is_dry:
-            cookies["last_run"] = _now_in_prague().isoformat(timespec="seconds")
-            save_cookies(cookies, args.cookies_file)
         sys.exit(0)
 
     print(f"Found {len(new_items)} new item(s), fetching details...", file=sys.stderr)
@@ -835,7 +862,6 @@ def main(argv=None):
     # Download attachments only when email delivery is enabled; prompt-only mode
     # only needs the attachment names already present in the detail parse.
     downloaded_files = []
-    last_run_saved = False
     with tempfile.TemporaryDirectory(prefix="edookit_") as tmp_dir:
         if should_send_email:
             for detail in details_by_url.values():
@@ -896,30 +922,29 @@ def main(argv=None):
                 email_failed = True
 
             if not email_failed:
-                newest = max(
-                    (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
-                    default=_now_in_prague(),
-                )
-                cookies["last_run"] = newest.isoformat(timespec="seconds")
+                seen_items = seen_items or {}
+                sent_at = _now_in_prague().isoformat(timespec="seconds")
+                for item in new_items:
+                    identity = _item_identity(item)
+                    if identity:
+                        seen_items[identity] = sent_at
+                cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
                 save_cookies(cookies, args.cookies_file)
-                print(f"Updated last_run to {cookies['last_run']}", file=sys.stderr)
-                last_run_saved = True
 
             if not email_failed and config.get("email_test"):
                 print("Sending test email...", file=sys.stderr)
                 send_test_email(subject, summary_markdown, config, downloaded_files)
         # Temp dir and files are cleaned up here
 
-    # Update last_run unless dry-run (update even on failures — data was sent
-    # to stdout so it's not lost, and we don't want to re-process next run)
-    if not skip_email_and_last_run and not last_run_saved:
-        newest = max(
-            (_normalize_timestamp(i["timestamp"]) for i in new_items if i["timestamp"]),
-            default=_now_in_prague(),
-        )
-        cookies["last_run"] = newest.isoformat(timespec="seconds")
+    if not skip_delivery and not config.get("smtp_host"):
+        seen_items = seen_items or {}
+        sent_at = _now_in_prague().isoformat(timespec="seconds")
+        for item in new_items:
+            identity = _item_identity(item)
+            if identity:
+                seen_items[identity] = sent_at
+        cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
         save_cookies(cookies, args.cookies_file)
-        print(f"Updated last_run to {cookies['last_run']}", file=sys.stderr)
 
     if translation_failed or email_failed:
         sys.exit(1)

@@ -14,7 +14,8 @@ and emails a summary. Designed to run on a systemd timer in a container.
 - Translates the summary from Czech to English (falls back to Czech if the
   model is unavailable)
 - Emails the result as both plain text and HTML with attachments
-- Tracks the last-run timestamp so only new items are processed
+- Tracks delivered item URLs for 90 days (up to 500 entries) so late-visible
+  items are not lost to timestamp ordering
 
 ## Setup
 
@@ -106,7 +107,7 @@ If `EMAIL_TEST` is set, the run performs a second Azure-only translation pass af
 # Set env vars (or source an env file)
 export $(cat edookit2summary.env | xargs)
 
-# Preview output without sending email or updating last_run
+# Preview output without sending email or updating the seen-item ledger
 .venv/bin/python3 gather_updates.py --dry-run
 
 # Preview rendered HTML
@@ -115,17 +116,21 @@ export $(cat edookit2summary.env | xargs)
 # Build the exact translation prompt payload for a UTC day without calling LLM
 .venv/bin/python3 gather_updates.py --prompt-for-date 2026-06-04
  
-# Run for real (sends email, updates last_run)
+# Run for real (sends email, updates the seen-item ledger)
 .venv/bin/python3 gather_updates.py
 ```
 
 The cookies file defaults to `cookies.json` in the current directory. Pass a
 different path as a positional argument if needed.
 
+Normal runs store delivered inbox item URLs in `seen_items` in the cookies file.
+Entries are retained for 90 days and capped at 500 items. Item delivery is
+determined by the stored item identity, never by the displayed timestamp.
+
 `--prompt-for-date YYYY-MM-DD` uses the same summary-generation path as the
 normal update flow, but stops before any translation attempt. It prints JSON
 with `utc_date`, `summary_markdown`, `system_prompt`, and `user_prompt` and
-never sends email or updates `last_run`.
+never sends email or updates the seen-item ledger.
 
 ### fetch_assignment.py
 
