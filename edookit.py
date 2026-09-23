@@ -74,7 +74,6 @@ _ENV_MAP = {
     "azure_openai_endpoint":    "AZURE_OPENAI_ENDPOINT",
     "azure_openai_key":         "AZURE_OPENAI_KEY",
     "azure_openai_deployment":  "AZURE_OPENAI_DEPLOYMENT",
-    "azure_openai_api_version": "AZURE_OPENAI_API_VERSION",
     "gemini_api_key":           "GEMINI_API_KEY",
     "gemini_models":            "GEMINI_MODELS",
     "target_language":          "TARGET_LANGUAGE",
@@ -89,7 +88,6 @@ _ENV_MAP = {
     "azure_test_endpoint":      "AZURE_TEST_ENDPOINT",
     "azure_test_key":           "AZURE_TEST_KEY",
     "azure_test_deployment":    "AZURE_TEST_DEPLOYMENT",
-    "azure_test_api_version":   "AZURE_TEST_API_VERSION",
     "max_updates":              "MAX_UPDATES",
     "event_lookahead_days":     "EVENT_LOOKAHEAD_DAYS",
     "plus4u_email":             "PLUS4U_EMAIL",
@@ -639,7 +637,7 @@ def download_attachment(download_url, cookies, dest_dir):
 
 AZURE_OPENAI_CONFIG_KEYS = [
     "azure_openai_endpoint", "azure_openai_key",
-    "azure_openai_deployment", "azure_openai_api_version",
+    "azure_openai_deployment",
 ]
 
 _DEFAULT_GEMINI_MODELS = "gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-3.1-pro-preview"
@@ -671,13 +669,9 @@ def _azure_openai_chat(config, messages, deployment, max_tokens=None):
     failure so the retry loop can try the next provider/model.
     """
     endpoint = config["azure_openai_endpoint"].rstrip("/")
-    api_version = config["azure_openai_api_version"]
-    url = (
-        f"{endpoint}/openai/deployments/{deployment}"
-        f"/chat/completions?api-version={api_version}"
-    )
+    url = f"{endpoint}/openai/v1/chat/completions"
 
-    payload = {"messages": messages}
+    payload = {"model": deployment, "messages": messages}
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
 

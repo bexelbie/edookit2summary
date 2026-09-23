@@ -63,7 +63,6 @@ See `edookit2summary.env.example` for the full list:
 | `AZURE_OPENAI_ENDPOINT`    | Azure OpenAI base URL                                           |
 | `AZURE_OPENAI_KEY`         | Azure API key                                                   |
 | `AZURE_OPENAI_DEPLOYMENT`  | Comma-separated deployment names (default `gpt-4.1-nano`)      |
-| `AZURE_OPENAI_API_VERSION` | API version (e.g. `2025-01-01-preview`)                         |
 
 ### LLM failover
 
@@ -105,7 +104,6 @@ If `EMAIL_TEST` is set, the run performs a second Azure-only translation pass af
 | `AZURE_TEST_ENDPOINT`      | Azure test endpoint (falls back to `AZURE_OPENAI_ENDPOINT`) |
 | `AZURE_TEST_KEY`           | Azure test API key (falls back to `AZURE_OPENAI_KEY`) |
 | `AZURE_TEST_DEPLOYMENT`    | Azure test deployment (falls back to `AZURE_OPENAI_DEPLOYMENT`) |
-| `AZURE_TEST_API_VERSION`   | Azure test API version (falls back to `AZURE_OPENAI_API_VERSION`) |
 
 ## Usage
 

@@ -28,8 +28,7 @@ Volume=/home/youruser/edookit2summary:/data:Z
 # Static config: Azure OpenAI and SMTP settings.
 # Deliver via 1Password/op or a plain env file with key=value lines.
 # Required vars: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY,
-#   AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_VERSION,
-#   SMTP_HOST, SMTP_PORT, EMAIL_FROM, EMAIL_TO
+#   AZURE_OPENAI_DEPLOYMENT, SMTP_HOST, SMTP_PORT, EMAIL_FROM, EMAIL_TO
 EnvironmentFile=/home/youruser/edookit2summary/edookit2summary.env
 
 # Set this to your Podman network that can reach the SMTP server

@@ -662,10 +662,6 @@ def build_test_config(config):
             config.get("azure_test_deployment")
             or config.get("azure_openai_deployment")
         ),
-        "azure_openai_api_version": (
-            config.get("azure_test_api_version")
-            or config.get("azure_openai_api_version")
-        ),
     })
     test_config["gemini_api_key"] = ""
     test_config["gemini_models"] = ""
@@ -678,7 +674,6 @@ def _has_complete_test_azure_config(config):
     required_fields = (
         "azure_openai_endpoint",
         "azure_openai_key",
-        "azure_openai_api_version",
     )
     return all(test_config.get(field) for field in required_fields)
 
@@ -695,7 +690,6 @@ def send_test_email(subject, summary_markdown, config, downloaded_files):
             field for field in (
                 "azure_openai_endpoint",
                 "azure_openai_key",
-                "azure_openai_api_version",
             )
             if not test_config.get(field)
         ]

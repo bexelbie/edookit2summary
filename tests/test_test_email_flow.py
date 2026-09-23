@@ -16,7 +16,6 @@ class TestEmailFlowTests(unittest.TestCase):
             "azure_openai_endpoint": "https://main.openai.azure.com",
             "azure_openai_key": "main-key",
             "azure_openai_deployment": "main-deploy",
-            "azure_openai_api_version": "2024-05-01-preview",
             "gemini_api_key": "gemini-key",
             "gemini_models": "gemini-model",
             "email_to": "main@example.com",
@@ -28,7 +27,6 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(test_config["azure_openai_endpoint"], "https://main.openai.azure.com")
         self.assertEqual(test_config["azure_openai_key"], "main-key")
         self.assertEqual(test_config["azure_openai_deployment"], "main-deploy")
-        self.assertEqual(test_config["azure_openai_api_version"], "2024-05-01-preview")
         self.assertEqual(test_config["email_to"], "test@example.com")
         self.assertEqual(test_config["gemini_api_key"], "")
         self.assertEqual(test_config["gemini_models"], "")
@@ -38,9 +36,7 @@ class TestEmailFlowTests(unittest.TestCase):
             "azure_openai_endpoint": "https://main.openai.azure.com",
             "azure_openai_key": "main-key",
             "azure_openai_deployment": "main-deploy",
-            "azure_openai_api_version": "2024-05-01-preview",
             "azure_test_deployment": "test-deploy",
-            "azure_test_api_version": "2025-01-01-preview",
             "email_to": "main@example.com",
             "email_test": "test@example.com",
         }
@@ -50,7 +46,6 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(test_config["azure_openai_endpoint"], "https://main.openai.azure.com")
         self.assertEqual(test_config["azure_openai_key"], "main-key")
         self.assertEqual(test_config["azure_openai_deployment"], "test-deploy")
-        self.assertEqual(test_config["azure_openai_api_version"], "2025-01-01-preview")
 
     def test_send_test_email_uses_test_recipient_and_azure_only_config(self):
         config = {
@@ -59,7 +54,6 @@ class TestEmailFlowTests(unittest.TestCase):
             "azure_openai_endpoint": "https://main.openai.azure.com",
             "azure_openai_key": "main-key",
             "azure_openai_deployment": "main-deploy",
-            "azure_openai_api_version": "2024-05-01-preview",
             "gemini_api_key": "gemini-key",
             "gemini_models": "gemini-model",
         }
@@ -85,9 +79,8 @@ class TestEmailFlowTests(unittest.TestCase):
             "email_to": "main@example.com",
             "email_test": "test@example.com",
             "azure_openai_endpoint": "https://main.openai.azure.com",
-            "azure_openai_key": "main-key",
+            "azure_openai_key": "",
             "azure_openai_deployment": "main-deploy",
-            "azure_openai_api_version": "",
         }
 
         with patch("gather_updates.translate_text") as translate_text, \
@@ -110,9 +103,7 @@ class TestEmailFlowTests(unittest.TestCase):
             "azure_openai_endpoint": "https://primary.openai.azure.com",
             "azure_openai_key": "primary-key",
             "azure_openai_deployment": "primary-deploy",
-            "azure_openai_api_version": "2024-05-01-preview",
             "azure_test_deployment": "test-deploy",
-            "azure_test_api_version": "2025-01-01-preview",
             "gemini_api_key": "gemini-key",
             "gemini_models": "gemini-model",
         }
@@ -132,7 +123,6 @@ class TestEmailFlowTests(unittest.TestCase):
         self.assertEqual(used_config["azure_openai_endpoint"], "https://primary.openai.azure.com")
         self.assertEqual(used_config["azure_openai_key"], "primary-key")
         self.assertEqual(used_config["azure_openai_deployment"], "test-deploy")
-        self.assertEqual(used_config["azure_openai_api_version"], "2025-01-01-preview")
         send_email.assert_called_once()
 
     def test_main_persists_seen_items_before_test_lane(self):
@@ -175,11 +165,9 @@ class TestEmailFlowTests(unittest.TestCase):
                     "azure_openai_endpoint": "https://main.openai.azure.com",
                     "azure_openai_key": "main-key",
                     "azure_openai_deployment": "main-deploy",
-                    "azure_openai_api_version": "2024-05-01-preview",
                     "azure_test_endpoint": "https://test.openai.azure.com",
                     "azure_test_key": "test-key",
                     "azure_test_deployment": "test-deploy",
-                    "azure_test_api_version": "2024-05-01-preview",
                 }), \
                 patch("gather_updates.save_cookies", side_effect=lambda cookies, path: order.append("save_cookies")) as save_cookies:
             gather_updates.main(["cookies.json"])
@@ -252,7 +240,6 @@ class TestEmailFlowTests(unittest.TestCase):
                     "azure_openai_endpoint": "https://main.openai.azure.com",
                     "azure_openai_key": "main-key",
                     "azure_openai_deployment": "main-deploy",
-                    "azure_openai_api_version": "2024-05-01-preview",
                 }), \
                 patch("gather_updates.save_cookies") as save_cookies:
             stdout = io.StringIO()

@@ -28,7 +28,6 @@ class LlmHttpTests(unittest.TestCase):
         config = {
             "azure_openai_endpoint": "https://example.openai.azure.com/",
             "azure_openai_key": "secret",
-            "azure_openai_api_version": "2024-05-01-preview",
         }
 
         with patch("edookit.subprocess.run", side_effect=AssertionError("curl used")), \
@@ -41,9 +40,12 @@ class LlmHttpTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(
             request.full_url,
-            "https://example.openai.azure.com/openai/deployments/deploy/chat/completions?api-version=2024-05-01-preview",
+            "https://example.openai.azure.com/openai/v1/chat/completions",
         )
-        self.assertEqual(json.loads(request.data), {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(
+            json.loads(request.data),
+            {"model": "deploy", "messages": [{"role": "user", "content": "hi"}]},
+        )
 
     def test_gemini_uses_urllib(self):
         with patch("edookit.subprocess.run", side_effect=AssertionError("curl used")), \
