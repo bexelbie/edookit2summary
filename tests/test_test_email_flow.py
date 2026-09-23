@@ -2,7 +2,7 @@
 
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -188,6 +188,8 @@ class TestEmailFlowTests(unittest.TestCase):
             "timestamp": datetime(2026, 6, 4, 23, 30, tzinfo=ZoneInfo("Europe/Prague")),
         }
 
+        stdout = io.StringIO()
+        stderr = io.StringIO()
         with patch("gather_updates.load_cookies", return_value={
             "last_run": "2026-06-04T00:00:00+02:00",
         }), \
@@ -202,12 +204,20 @@ class TestEmailFlowTests(unittest.TestCase):
                 patch("gather_updates.send_email") as send_email, \
                 patch("gather_updates.load_config", return_value={"target_language": "English", "smtp_host": "smtp.example"}), \
                 patch("gather_updates.save_cookies") as save_cookies:
-            gather_updates.main(["cookies.json"])
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                gather_updates.main(["cookies.json"])
 
         self.assertEqual(send_email.call_count, 1)
         save_cookies.assert_called_once()
         saved_cookies = save_cookies.call_args.args[0]
         self.assertIn("/messages/1", saved_cookies["seen_items"])
+        self.assertIn(
+            "Selected item: inboxMessage /messages/1 [4. 6. 2026, 23:30] Test",
+            stdout.getvalue(),
+        )
+        self.assertIn("Delivered item: inboxMessage /messages/1", stdout.getvalue())
+        self.assertNotIn("Translated", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_main_keeps_primary_email_path_when_test_email_fails(self):
         item = {

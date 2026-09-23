@@ -230,6 +230,6 @@ must be done manually in a browser.
 | ----------------------------------------- | ---------------------------------------------------- |
 | Cookies expired                           | Alert email sent, exit 1                             |
 | Translation failed                        | Czech text included with error note in email, exit 1 |
-| SMTP failed                               | Output still printed to stdout, exit 1               |
+| SMTP failed                               | Error logged; item remains unrecorded, exit 1         |
 | SMTP credentials without TLS              | Refuses to connect, exit 1                           |
 | LLM unreachable (no-updates health check) | Alert email sent, exit 0                             |

@@ -705,7 +705,7 @@ def send_test_email(subject, summary_markdown, config, downloaded_files):
         if translated.startswith("[Translation failed:"):
             print("Warning: test-model translation failed, sending fallback Czech text.", file=sys.stderr)
         send_email(subject, translated, test_config, downloaded_files, to_addr=test_recipient)
-        print("Test email sent.", file=sys.stderr)
+        print("Test email sent.")
         return True
     except Exception as e:
         print(f"Warning: test email failed: {e}", file=sys.stderr)
@@ -729,6 +729,7 @@ def main(argv=None):
     is_dry = args.dry_run or args.dry_run_html
     skip_delivery = is_dry or args.prompt_for_date is not None
     should_send_email = not skip_delivery
+    progress_stream = sys.stderr if skip_delivery else sys.stdout
     config = load_config()
     config["cookies_file"] = args.cookies_file
 
@@ -738,7 +739,7 @@ def main(argv=None):
         if config.get("plus4u_email") and config.get("plus4u_password"):
             print(
                 f"Cookie file not found: {args.cookies_file}; bootstrapping a new session via Plus4U login.",
-                file=sys.stderr,
+                file=progress_stream,
             )
             cookies = {}
         else:
@@ -755,7 +756,7 @@ def main(argv=None):
     # Ensure session is alive before any authenticated fetch, including dry runs.
     try:
         keepalive(cookies, args.cookies_file, config)
-        print("Session OK.", file=sys.stderr)
+        print("Session OK.", file=progress_stream)
     except AuthError as e:
         print(f"Error: {e}", file=sys.stderr)
         if should_send_email:
@@ -767,7 +768,7 @@ def main(argv=None):
         sys.exit(1)
 
     # Fetch and parse inbox
-    print("Fetching inbox...", file=sys.stderr)
+    print("Fetching inbox...", file=progress_stream)
     try:
         inbox_html = fetch_page(BASE_URL + "/overview/updates", cookies, args.cookies_file)
         all_items = parse_inbox(inbox_html)
@@ -795,13 +796,13 @@ def main(argv=None):
             print(
                 f"Initialized seen-item ledger from last_run through "
                 f"{bootstrap_boundary.isoformat(timespec='seconds')}.",
-                file=sys.stderr,
+                file=progress_stream,
             )
         else:
             print(
                 f"Initialized seen-item ledger with a {BOOTSTRAP_WINDOW} "
                 f"bootstrap window ending {bootstrap_boundary.isoformat(timespec='seconds')}.",
-                file=sys.stderr,
+                file=progress_stream,
             )
     else:
         cookies.pop("last_run", None)
@@ -818,17 +819,17 @@ def main(argv=None):
 
     max_updates = int(config.get("max_updates", 50))
     if len(new_items) > max_updates:
-        print(f"Limiting {len(new_items)} new updates to {max_updates}.", file=sys.stderr)
+        print(
+            f"Limiting {len(new_items)} new updates to {max_updates}.",
+            file=progress_stream,
+        )
         new_items = new_items[:max_updates]
 
-    if new_items:
+    for item in new_items:
         print(
-            "New inbox items: " + "; ".join(
-                f"{item['type']} {item['url']} "
-                f"[{item['timestamp_raw'] or 'no timestamp'}] {item['title']}"
-                for item in new_items
-            ),
-            file=sys.stderr,
+            f"Selected item: {item['type']} {_item_identity(item) or 'unknown'} "
+            f"[{item['timestamp_raw'] or 'no timestamp'}] {item['title']}",
+            file=progress_stream,
         )
 
     if not new_items:
@@ -845,11 +846,11 @@ def main(argv=None):
 
         if state_changed and not skip_delivery:
             save_cookies(cookies, args.cookies_file)
-        print("No new updates since last run.", file=sys.stderr)
+        print("No new updates since last run.", file=progress_stream)
         # Good time to check that the translation model is still available
         try:
             check_llm_config(config)
-            print("Translation model OK.", file=sys.stderr)
+            print("Translation model OK.", file=progress_stream)
         except TranslationError as e:
             print(f"Warning: {e}", file=sys.stderr)
             if should_send_email:
@@ -862,7 +863,10 @@ def main(argv=None):
                 )
         sys.exit(0)
 
-    print(f"Found {len(new_items)} new item(s), fetching details...", file=sys.stderr)
+    print(
+        f"Found {len(new_items)} new item(s), fetching details...",
+        file=progress_stream,
+    )
 
     # Fetch "Requires Action" widget from the dashboard (only when there are
     # new items — action items are undated, so we include them as a reminder
@@ -872,7 +876,10 @@ def main(argv=None):
         dash_html = fetch_page(BASE_URL + "/", cookies, args.cookies_file)
         action_items = parse_action_items(dash_html)
         if action_items:
-            print(f"Including {len(action_items)} action item(s) as reminder.", file=sys.stderr)
+            print(
+                f"Including {len(action_items)} action item(s) as reminder.",
+                file=progress_stream,
+            )
     except (AuthError, RuntimeError) as e:
         print(f"Warning: could not fetch action items: {e}", file=sys.stderr)
 
@@ -880,7 +887,7 @@ def main(argv=None):
     upcoming_events = []
     new_event_urls = set()
     try:
-        print("Fetching upcoming events...", file=sys.stderr)
+        print("Fetching upcoming events...", file=progress_stream)
         upcoming_events = fetch_upcoming_events(cookies, args.cookies_file, config)
         # Determine which upcoming events are also new in the inbox
         new_event_urls = {
@@ -891,7 +898,7 @@ def main(argv=None):
             print(
                 f"Including {len(upcoming_events)} upcoming event(s) "
                 f"({new_count} new).",
-                file=sys.stderr,
+                file=progress_stream,
             )
     except (AuthError, RuntimeError) as e:
         print(f"Warning: could not fetch upcoming events: {e}", file=sys.stderr)
@@ -905,7 +912,10 @@ def main(argv=None):
     details_by_url = {}
     for i, item in enumerate(new_items, 1):
         if item["url"]:
-            print(f"  [{i}/{len(new_items)}] {item['title']}", file=sys.stderr)
+            print(
+                f"Fetching item {i}/{len(new_items)}...",
+                file=progress_stream,
+            )
             detail = fetch_item_detail(item, cookies, args.cookies_file)
             if detail:
                 details_by_url[item["url"]] = detail
@@ -918,7 +928,10 @@ def main(argv=None):
             for detail in details_by_url.values():
                 for att in detail.get("attachments", []):
                     try:
-                        print(f"  Downloading: {att['name']}", file=sys.stderr)
+                        print(
+                            f"Downloading attachment: {att['name']}",
+                            file=progress_stream,
+                        )
                         filepath, _ = download_attachment(
                             att["download_url"], cookies, tmp_dir
                         )
@@ -947,17 +960,17 @@ def main(argv=None):
         # Translate — fall back to Czech with error note if translation fails
         translation_failed = False
         target_lang = config.get("target_language", "English")
-        print(f"Translating to {target_lang}...", file=sys.stderr)
+        print(f"Translating to {target_lang}...", file=progress_stream)
         translated = translate_text(summary_markdown, config)
         if translated.startswith("[Translation failed:"):
             print("Warning: translation failed, using Czech.", file=sys.stderr)
             translation_failed = True
         output = translated
 
-        # Print to stdout (always)
+        # Explicit preview modes print content; normal delivery logs metadata only.
         if args.dry_run_html:
             print(render_email_html(output))
-        else:
+        elif args.dry_run:
             print(output)
 
         # Send email unless dry-run
@@ -965,9 +978,9 @@ def main(argv=None):
         if should_send_email and config.get("smtp_host"):
             subject = f"Edookit: {len(new_items)} new update(s)"
             try:
-                print("Sending email...", file=sys.stderr)
+                print("Sending email...", file=progress_stream)
                 send_email(subject, output, config, downloaded_files)
-                print("Email sent.", file=sys.stderr)
+                print("Email sent.", file=progress_stream)
             except Exception as e:
                 print(f"Error: email failed: {e}", file=sys.stderr)
                 email_failed = True
@@ -981,10 +994,16 @@ def main(argv=None):
                         seen_items[identity] = sent_at
                 cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
                 save_cookies(cookies, args.cookies_file)
+                for item in new_items:
+                    print(
+                        f"Delivered item: {item['type']} "
+                        f"{_item_identity(item) or 'unknown'}",
+                        file=progress_stream,
+                    )
                 state_changed = False
 
             if not email_failed and config.get("email_test"):
-                print("Sending test email...", file=sys.stderr)
+                print("Sending test email...", file=progress_stream)
                 send_test_email(subject, summary_markdown, config, downloaded_files)
         # Temp dir and files are cleaned up here
 
@@ -997,6 +1016,12 @@ def main(argv=None):
                 seen_items[identity] = sent_at
         cookies[SEEN_ITEMS_KEY] = _prune_seen_items(seen_items)
         save_cookies(cookies, args.cookies_file)
+        for item in new_items:
+            print(
+                f"Processed item without email: {item['type']} "
+                f"{_item_identity(item) or 'unknown'}",
+                file=progress_stream,
+            )
         state_changed = False
 
     if state_changed and not skip_delivery:
