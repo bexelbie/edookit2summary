@@ -28,14 +28,14 @@ class LlmHttpTests(unittest.TestCase):
         config = {
             "azure_openai_endpoint": "https://example.openai.azure.com/",
             "azure_openai_key": "secret",
+            "azure_openai_deployment": "deploy",
         }
 
         with patch("edookit.subprocess.run", side_effect=AssertionError("curl used")), \
                 patch("edookit.urllib_request.urlopen",
                       return_value=_Response('{"choices":[{"message":{"content":"ok"}}]}')) as urlopen:
-            result = edookit._azure_openai_chat(config, [{"role": "user", "content": "hi"}], "deploy")
+            edookit.check_llm_config(config)
 
-        self.assertEqual(result, "ok")
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(
@@ -44,7 +44,13 @@ class LlmHttpTests(unittest.TestCase):
         )
         self.assertEqual(
             json.loads(request.data),
-            {"model": "deploy", "messages": [{"role": "user", "content": "hi"}]},
+            {
+                "model": "deploy",
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {"role": "user", "content": "Say OK"},
+                ],
+            },
         )
 
     def test_gemini_uses_urllib(self):

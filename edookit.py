@@ -662,7 +662,7 @@ def _post_json(url, headers, payload, service):
         raise TranslationError(f"HTTP request failed reaching {service}: {e.reason}") from e
 
 
-def _azure_openai_chat(config, messages, deployment, max_tokens=None):
+def _azure_openai_chat(config, messages, deployment):
     """Send a single chat completion request to an Azure OpenAI deployment.
 
     Returns the extracted text content. Raises TranslationError on any
@@ -672,8 +672,6 @@ def _azure_openai_chat(config, messages, deployment, max_tokens=None):
     url = f"{endpoint}/openai/v1/chat/completions"
 
     payload = {"model": deployment, "messages": messages}
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
 
     status, body = _post_json(
         url,
@@ -758,8 +756,8 @@ def _get_llm_providers(config):
     """Build an ordered list of (provider_name, callable) pairs.
 
     Gemini is tried first when configured. Each callable accepts
-    (system_prompt, user_text, max_tokens=None) and returns the response
-    text or raises TranslationError.
+    (system_prompt, user_text) and returns the response text or raises
+    TranslationError.
     """
     providers = []
 
@@ -767,7 +765,7 @@ def _get_llm_providers(config):
         models_str = config.get("gemini_models", _DEFAULT_GEMINI_MODELS)
         models = [m.strip() for m in models_str.split(",") if m.strip()]
         for model in models:
-            def _call(system_prompt, user_text, max_tokens=None, _m=model):
+            def _call(system_prompt, user_text, _m=model):
                 return _gemini_chat(
                     config, text=user_text, model=_m,
                     system_instruction=system_prompt,
@@ -783,20 +781,20 @@ def _get_llm_providers(config):
             )
             deployments = [d.strip() for d in deployments_str.split(",") if d.strip()]
             for dep in deployments:
-                def _call(system_prompt, user_text, max_tokens=None, _d=dep):
+                def _call(system_prompt, user_text, _d=dep):
                     messages = [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_text},
                     ]
                     return _azure_openai_chat(
-                        config, messages, deployment=_d, max_tokens=max_tokens,
+                        config, messages, deployment=_d,
                     )
                 providers.append((f"azure/{dep}", _call))
 
     return providers
 
 
-def _llm_chat(config, system_prompt, user_text, max_tokens=None):
+def _llm_chat(config, system_prompt, user_text):
     """Send a chat request with retry and cross-provider failover.
 
     Builds a provider list (Gemini first, then Azure) and tries each in
@@ -817,7 +815,7 @@ def _llm_chat(config, system_prompt, user_text, max_tokens=None):
     for cycle in range(max_retries):
         for name, call_fn in providers:
             try:
-                return call_fn(system_prompt, user_text, max_tokens=max_tokens)
+                return call_fn(system_prompt, user_text)
             except TranslationError as e:
                 last_error = f"{name}: {e}"
                 print(f"LLM attempt failed ({name}): {e}", file=sys.stderr)
@@ -841,7 +839,7 @@ def check_llm_config(config):
     Sends a minimal completion request through the retry/failover loop.
     Raises TranslationError if every provider is unavailable.
     """
-    _llm_chat(config, system_prompt="", user_text="Say OK", max_tokens=3)
+    _llm_chat(config, system_prompt="", user_text="Say OK")
 
 
 def build_translation_prompt(text, config):
